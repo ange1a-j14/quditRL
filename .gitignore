@@ -1,0 +1,19 @@
+# jupyter notebook
+.ipynb_checkpoints/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+*.pyz
+
+# vscode
+.vscode/
+
+# cursor
+.cursor/
