@@ -12,6 +12,10 @@ __pycache__/
 *.pyzw
 *.pyz
 
+# model checkpoints
+checkpoints/
+*.pt
+
 # vscode
 .vscode/
 
