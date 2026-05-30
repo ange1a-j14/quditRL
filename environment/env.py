@@ -209,7 +209,7 @@ class QuditEnv(gym.Env):
         if terminate_signal > 0.0 or self._n_pulses >= self.max_steps:
             # Agent chose to end the episode — collect terminal reward
             # or back stop reward
-            reward = self.reward_fn(self._U_current, self._U_target)
+            reward = self.reward_fn(self._U_current, self._U_target, self._n_pulses)
             return self._get_obs(), reward, True, False, self._get_info()
 
         # Apply pulse(s)
@@ -221,7 +221,7 @@ class QuditEnv(gym.Env):
         self._n_pulses += 1
 
         # DO not move above as it needs to be after the pulse is applied
-        reward = self.reward_fn(self._U_current, self._U_target)
+        reward = self.reward_fn(self._U_current, self._U_target, self._n_pulses)
         return self._get_obs(), reward, False, False, self._get_info()
 
     def _get_obs(self) -> dict[str, np.ndarray]:

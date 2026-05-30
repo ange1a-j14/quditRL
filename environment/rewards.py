@@ -1,9 +1,10 @@
 """
+Reward functions for QuditEnv.
 
-Rewawrd functions should follow the input output format of RewardFn
+All reward functions must match the RewardFn signature:
+    (U_current, U_target, n_pulses) -> float
 
-e.g. ``unitary_distance``: negative L1 distance between two unitaries.
-  Suitable as both a per-step and terminal reward.
+Higher reward is better; a perfect match yields 0.
 """
 
 from __future__ import annotations
@@ -13,24 +14,35 @@ from typing import Callable
 import torch
 
 
-RewardFn = Callable[[torch.Tensor, torch.Tensor], float]
+RewardFn = Callable[[torch.Tensor, torch.Tensor, int], float]
 """Type alias for reward functions.
-(U_current: torch.Tensor, U_target: torch.Tensor) -> float
-Both are shape ``(d, d)`` and output is float. Higher reward => better.
+(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int) -> float
+Both unitaries are shape ``(d, d)``; n_pulses is the number of pulses applied
+so far this episode. Output is float; higher is better.
 """
 
 
-def unitary_distance(U_current: torch.Tensor, U_target: torch.Tensor) -> float:
+def unitary_distance(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int = 0) -> float:
     """Negative element-wise L1 distance between two unitaries.
 
     F(V, U) = -\Sigma_{i,j} |V_{ij} - U_{ij}|
 
     A perfect match produces 0; all other values are negative.
-    neg loss so higher is better
+    """
+    return -torch.sum((U_current - U_target).abs()).item()
+
+
+def penalized_distance(step_penalty: float) -> RewardFn:
+    """Reward factory: L1 distance with a flat per-pulse cost.
+
+    r(V, U, n) = -||V - U||_1  -  step_penalty * n_pulses
 
     Parameters
     ----------
-    U_current: current unitary
-    U_target: target unitary
+    step_penalty:
+        Cost deducted for every pulse applied this episode.
     """
-    return -torch.sum((U_current - U_target).abs()).item()
+    def _reward(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int) -> float:
+        dist = -torch.sum((U_current - U_target).abs()).item()
+        return dist - step_penalty * n_pulses
+    return _reward
