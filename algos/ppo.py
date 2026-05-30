@@ -63,7 +63,7 @@ def _compute_gae(
 def _collect_rollout(env, policy, state: dict, rollout_steps: int):
     obs = state["obs"]
     obss, acts, logps, rews, dones, vals = [], [], [], [], [], []
-    ep_dist, ep_len = [], []
+    ep_fid, ep_len = [], []
     for _ in range(rollout_steps):
         flat = flatten_obs(obs)
         action, logp, value = policy.act(flat)
@@ -72,7 +72,7 @@ def _collect_rollout(env, policy, state: dict, rollout_steps: int):
         obss.append(flat); acts.append(action); logps.append(logp)
         rews.append(reward); dones.append(float(done)); vals.append(value)
         if done:
-            ep_dist.append(info["distance"]); ep_len.append(info["n_pulses"])
+            ep_fid.append(info["fidelity"]); ep_len.append(info["n_pulses"])
             obs, _ = env.reset()
     state["obs"] = obs
     last_value = policy.act(flatten_obs(obs))[2]
@@ -84,7 +84,7 @@ def _collect_rollout(env, policy, state: dict, rollout_steps: int):
         done=np.asarray(dones, np.float32),
         val=np.asarray(vals, np.float32),
     )
-    return buf, last_value, ep_dist, ep_len
+    return buf, last_value, ep_fid, ep_len
 
 
 def _ppo_update(policy, optimizer, buf: dict, adv: np.ndarray, ret: np.ndarray, cfg: PPOConfig):
@@ -113,8 +113,8 @@ def _ppo_update(policy, optimizer, buf: dict, adv: np.ndarray, ret: np.ndarray, 
 
 @torch.no_grad()
 def evaluate(env, policy, targets: list) -> tuple[float, float]:
-    """Greedy rollout on each target; returns (mean_distance, mean_pulses)."""
-    dists, lens = [], []
+    """Greedy rollout on each target; returns (mean_fidelity, mean_pulses)."""
+    fids, lens = [], []
     for U in targets:
         obs, info = env.reset(options={"U_target": U})
         done = False
@@ -122,8 +122,8 @@ def evaluate(env, policy, targets: list) -> tuple[float, float]:
             action, _, _ = policy.act(flatten_obs(obs), deterministic=True)
             obs, _, terminated, truncated, info = env.step(action)
             done = terminated or truncated
-        dists.append(info["distance"]); lens.append(info["n_pulses"])
-    return float(np.mean(dists)), float(np.mean(lens))
+        fids.append(info["fidelity"]); lens.append(info["n_pulses"])
+    return float(np.mean(fids)), float(np.mean(lens))
 
 
 def train(env, policy, cfg: PPOConfig, eval_targets: list | None = None) -> None:
@@ -149,26 +149,26 @@ def train(env, policy, cfg: PPOConfig, eval_targets: list | None = None) -> None
 
     with RunLogger(cfg.checkpoint_name) as logger:
         for it in range(1, n_iters + 1):
-            buf, last_value, ep_dist, ep_len = _collect_rollout(env, policy, state, cfg.rollout_steps)
+            buf, last_value, ep_fid, ep_len = _collect_rollout(env, policy, state, cfg.rollout_steps)
             adv, ret = _compute_gae(buf["rew"], buf["val"], buf["done"], last_value, cfg.gamma, cfg.gae_lambda)
             _ppo_update(policy, optimizer, buf, adv, ret, cfg)
 
-            d_ = np.mean(ep_dist) if ep_dist else float("nan")
+            f_ = np.mean(ep_fid) if ep_fid else float("nan")
             l_ = np.mean(ep_len) if ep_len else float("nan")
-            print(f"[iter {it:4d}] episodes={len(ep_dist):3d}  train_dist={d_:7.3f}  pulses={l_:5.2f}")
+            print(f"[iter {it:4d}] episodes={len(ep_fid):3d}  train_fid={f_:.4f}  pulses={l_:5.2f}")
 
-            ed, el = None, None
+            ef, el = None, None
             if eval_targets and it % cfg.eval_interval == 0:
-                ed, el = evaluate(env, policy, eval_targets)
-                print(f"    eval | mean_dist={ed:7.3f}  mean_pulses={el:5.2f}")
+                ef, el = evaluate(env, policy, eval_targets)
+                print(f"    eval | mean_fid={ef:.4f}  mean_pulses={el:5.2f}")
 
             logger.log(
                 iter=it,
                 timestep=it * cfg.rollout_steps,
-                episodes=len(ep_dist),
-                train_dist=d_,
+                episodes=len(ep_fid),
+                train_fidelity=f_,
                 train_pulses=l_,
-                eval_dist=ed,
+                eval_fidelity=ef,
                 eval_pulses=el,
             )
 
