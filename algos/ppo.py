@@ -7,6 +7,7 @@ needs to build the env and policy, then hand them here.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,7 +15,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from wrappers import flatten_obs
+from metrics import RunLogger, plot_run
 
 
 @dataclass
@@ -144,20 +147,34 @@ def train(env, policy, cfg: PPOConfig, eval_targets: list | None = None) -> None
 
     print(f"PPO | {n_iters} iters x {cfg.rollout_steps} steps | {cfg.checkpoint_name}")
 
-    for it in range(1, n_iters + 1):
-        buf, last_value, ep_dist, ep_len = _collect_rollout(env, policy, state, cfg.rollout_steps)
-        adv, ret = _compute_gae(buf["rew"], buf["val"], buf["done"], last_value, cfg.gamma, cfg.gae_lambda)
-        _ppo_update(policy, optimizer, buf, adv, ret, cfg)
+    with RunLogger(cfg.checkpoint_name) as logger:
+        for it in range(1, n_iters + 1):
+            buf, last_value, ep_dist, ep_len = _collect_rollout(env, policy, state, cfg.rollout_steps)
+            adv, ret = _compute_gae(buf["rew"], buf["val"], buf["done"], last_value, cfg.gamma, cfg.gae_lambda)
+            _ppo_update(policy, optimizer, buf, adv, ret, cfg)
 
-        d_ = np.mean(ep_dist) if ep_dist else float("nan")
-        l_ = np.mean(ep_len) if ep_len else float("nan")
-        print(f"[iter {it:4d}] episodes={len(ep_dist):3d}  train_dist={d_:7.3f}  pulses={l_:5.2f}")
+            d_ = np.mean(ep_dist) if ep_dist else float("nan")
+            l_ = np.mean(ep_len) if ep_len else float("nan")
+            print(f"[iter {it:4d}] episodes={len(ep_dist):3d}  train_dist={d_:7.3f}  pulses={l_:5.2f}")
 
-        if eval_targets and it % cfg.eval_interval == 0:
-            ed, el = evaluate(env, policy, eval_targets)
-            print(f"    eval | mean_dist={ed:7.3f}  mean_pulses={el:5.2f}")
+            ed, el = None, None
+            if eval_targets and it % cfg.eval_interval == 0:
+                ed, el = evaluate(env, policy, eval_targets)
+                print(f"    eval | mean_dist={ed:7.3f}  mean_pulses={el:5.2f}")
+
+            logger.log(
+                iter=it,
+                timestep=it * cfg.rollout_steps,
+                episodes=len(ep_dist),
+                train_dist=d_,
+                train_pulses=l_,
+                eval_dist=ed,
+                eval_pulses=el,
+            )
 
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
     path = os.path.join(cfg.checkpoint_dir, f"{cfg.checkpoint_name}.pt")
     torch.save({"state_dict": policy.state_dict(), **cfg.checkpoint_meta}, path)
     print(f"Saved policy to {path}")
+
+    plot_run(os.path.join("output", f"{cfg.checkpoint_name}.csv"))
