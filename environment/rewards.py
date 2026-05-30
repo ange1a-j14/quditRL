@@ -23,7 +23,7 @@ Both are shape ``(d, d)`` and output is float. Higher reward => better.
 def unitary_distance(U_current: torch.Tensor, U_target: torch.Tensor) -> float:
     """Negative element-wise L1 distance between two unitaries.
 
-F(V, U) = -\Sigma_{i,j} |V_{ij} - U_{ij}|
+    F(V, U) = -\Sigma_{i,j} |V_{ij} - U_{ij}|
 
     A perfect match produces 0; all other values are negative.
     neg loss so higher is better
