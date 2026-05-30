@@ -110,9 +110,6 @@ class QuditEnv(gym.Env):
         self.reward_fn = reward_fn
         self.max_steps = max_steps if max_steps is not None else 10 * d
 
-        # J_x spin operator: encodes the correct Rabi frequencies for each
-        # transition via jmat((d-1)/2, 'x'), exactly as in the notebook.
-        self._jx = make_jx(d)
 
         # Setup gym spaces using the gymnasium mod
         unitary_box = spaces.Box(
@@ -211,19 +208,19 @@ class QuditEnv(gym.Env):
         if terminate_signal > 0.0 or self._n_pulses >= self.max_steps:
             # Agent chose to end the episode — collect terminal reward
             # or back stop reward
-            reward = self.reward_fn(self._U_current, self._U_target)
+            reward = self.reward_fn(self._U_current, self._U_target, self._n_pulses)
             return self._get_obs(), reward, True, False, self._get_info()
 
         # Apply pulse(s)
         phis = torch.tensor(action[: self.d - 1], dtype=torch.float32)
         theta = torch.tensor(action[self.d - 1], dtype=torch.float32)
 
-        pulse = displacement_pulse(self._jx, phis, theta, self.h_config)
+        pulse = displacement_pulse(phis, theta, self.h_config)
         self._U_current = pulse @ self._U_current
         self._n_pulses += 1
 
         # DO not move above as it needs to be after the pulse is applied
-        reward = self.reward_fn(self._U_current, self._U_target)
+        reward = self.reward_fn(self._U_current, self._U_target, self._n_pulses)
         return self._get_obs(), reward, False, False, self._get_info()
 
     def _get_obs(self) -> dict[str, np.ndarray]:
