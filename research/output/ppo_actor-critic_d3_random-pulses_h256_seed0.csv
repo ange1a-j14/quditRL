@@ -1,0 +1,4 @@
+iter,timestep,episodes,train_dist,train_pulses,eval_dist,eval_pulses
+1,2048,144,6.671826,13.1944,,
+2,4096,148,6.643335,12.7973,,
+3,6144,144,6.451048,13.2222,,

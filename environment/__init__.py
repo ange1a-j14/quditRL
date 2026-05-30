@@ -25,11 +25,14 @@ make_jx:
 
 from .env import QuditEnv
 from .hamiltonian import HamiltonianConfig
-from .rewards import RewardFn, unitary_distance
+from .rewards import RewardFn, unitary_distance, unitary_fidelity, frobenius_distance, get_potential
 
 __all__ = [
     "QuditEnv",
     "HamiltonianConfig",
     "RewardFn",
     "unitary_distance",
+    "unitary_fidelity",
+    "frobenius_distance",
+    "get_potential",
 ]

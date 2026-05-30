@@ -233,7 +233,7 @@ class QuditEnv(gym.Env):
         distance = -unitary_distance(self._U_current, self._U_target)
         return {
             "distance": distance,
-            "potential": self.reward_fn(self._U_current, self._U_target), # whatever we trained with
+            "potential": self.reward_fn(self._U_current, self._U_target, self._n_pulses), # whatever we trained with
             "fidelity": unitary_fidelity(self._U_current, self._U_target),
             "n_pulses": self._n_pulses,
         }
