@@ -31,6 +31,35 @@ def unitary_distance(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: 
     """
     return -torch.sum((U_current - U_target).abs()).item()
 
+def unitary_fidelity(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int = 0) -> float:
+    """
+    Average gate fidelity for unitaries in SU(d).
+    F = |Tr(U_current^† U_target)|² / d²  ∈ [0, 1]
+    Perfect match → 1.0
+    Advantages of unitary fidelity: bounded, phase-invariant
+    Measures 'overlap' between two operators
+    Consistent with standard quantum system performance reporting
+    """
+    d = U_current.shape[0]
+    overlap = torch.trace(U_current.conj().T @ U_target)
+    return (overlap.abs() ** 2 / (d * d)).item()
+
+def frobenius_distance(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int = 0) -> float:
+    """Negative Frobenius norm: -||U - V||_F.
+    Perfect match → 0.0
+    """
+    return -torch.linalg.norm(U_current - U_target).item()
+
+REWARD_TYPES: dict[str, RewardFn] = {
+    "l1": unitary_distance,
+    "fidelity": unitary_fidelity,
+    "frobenius": frobenius_distance,
+}
+
+def get_potential(name: str) -> RewardFn:
+    if name not in REWARD_TYPES:
+        raise ValueError(f"Unknown potential {name!r}. Choose from {list(REWARD_TYPES)}")
+    return REWARD_TYPES[name]
 
 def penalized_distance(step_penalty: float) -> RewardFn:
     """Reward factory: L1 distance with a flat per-pulse cost.

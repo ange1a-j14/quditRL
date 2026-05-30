@@ -46,8 +46,11 @@ from gymnasium import spaces
 from .hamiltonian import (
     HamiltonianConfig,
     displacement_pulse,
+    make_jx_NN,
+    make_jx_NNN,
+    make_jx_FC
 )
-from .rewards import RewardFn, unitary_distance
+from .rewards import RewardFn, unitary_distance, unitary_fidelity
 
 
 def _unitary_to_obs(U: torch.Tensor) -> np.ndarray:
@@ -230,5 +233,7 @@ class QuditEnv(gym.Env):
         distance = -unitary_distance(self._U_current, self._U_target)
         return {
             "distance": distance,
+            "potential": self.reward_fn(self._U_current, self._U_target, self._n_pulses), # whatever we trained with
+            "fidelity": unitary_fidelity(self._U_current, self._U_target),
             "n_pulses": self._n_pulses,
         }

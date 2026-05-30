@@ -13,14 +13,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 
 import numpy as np
 import torch
 
-from train import (
-    ActorCritic, QuditEnv, TargetSampling, HamiltonianConfig,
-    flatten_obs, qft, haar_unitary,
-)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from environment import QuditEnv, HamiltonianConfig
+from agents import ActorCritic
+from wrappers import TargetSampling, flatten_obs
+from samplers import qft, haar_unitary
 
 
 @torch.no_grad()
@@ -44,7 +48,7 @@ def main():
 
     ckpt = torch.load(args.checkpoint, weights_only=True)
     d = ckpt["d"]
-    policy = ActorCritic(4 * d * d, d + 1)
+    policy = ActorCritic(4 * d * d, d + 1, hidden=ckpt.get("hidden", 256))
     policy.load_state_dict(ckpt["state_dict"])
     policy.eval()
     print(f"Loaded {args.checkpoint}  (d={d}, target={ckpt.get('target')}, seed={ckpt.get('seed')})")
