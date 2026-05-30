@@ -24,13 +24,12 @@ make_jx:
 """
 
 from .env import QuditEnv
-from .hamiltonian import HamiltonianConfig, make_jx
+from .hamiltonian import HamiltonianConfig
 from .rewards import RewardFn, unitary_distance
 
 __all__ = [
     "QuditEnv",
     "HamiltonianConfig",
-    "make_jx",
     "RewardFn",
-    "unitary_distance"
+    "unitary_distance",
 ]

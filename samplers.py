@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from scipy.linalg import dft
 
-from environment.hamiltonian import displacement_pulse, make_jx
+from environment.hamiltonian import displacement_pulse
 
 
 def qft(d: int) -> np.ndarray:
@@ -47,13 +47,12 @@ def make_sampler(mode: str, d: int, seed: int):
     if mode == "qft":
         return lambda: qft(d)
     if mode == "random-pulses":
-        jx = make_jx(d)
         def _sample():
             U = torch.eye(d, dtype=torch.cfloat)
             for _ in range(2 * d):
                 phis = torch.tensor(rng.uniform(-np.pi, np.pi, d - 1), dtype=torch.float32)
                 theta = torch.tensor(rng.uniform(0, np.pi), dtype=torch.float32)
-                U = displacement_pulse(jx, phis, theta) @ U
+                U = displacement_pulse(phis, theta) @ U
             return U.numpy().astype(np.complex64)
         return _sample
     raise ValueError(f"Unknown target mode: {mode!r}")

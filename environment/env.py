@@ -46,7 +46,6 @@ from gymnasium import spaces
 from .hamiltonian import (
     HamiltonianConfig,
     displacement_pulse,
-    make_jx,
 )
 from .rewards import RewardFn, unitary_distance
 
@@ -108,9 +107,6 @@ class QuditEnv(gym.Env):
         self.reward_fn = reward_fn
         self.max_steps = max_steps if max_steps is not None else 10 * d
 
-        # J_x spin operator: encodes the correct Rabi frequencies for each
-        # transition via jmat((d-1)/2, 'x'), exactly as in the notebook.
-        self._jx = make_jx(d)
 
         # Setup gym spaces using the gymnasium mod
         unitary_box = spaces.Box(
@@ -216,7 +212,7 @@ class QuditEnv(gym.Env):
         phis = torch.tensor(action[: self.d - 1], dtype=torch.float32)
         theta = torch.tensor(action[self.d - 1], dtype=torch.float32)
 
-        pulse = displacement_pulse(self._jx, phis, theta, self.h_config)
+        pulse = displacement_pulse(phis, theta, self.h_config)
         self._U_current = pulse @ self._U_current
         self._n_pulses += 1
 
