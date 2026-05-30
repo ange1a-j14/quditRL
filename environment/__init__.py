@@ -19,7 +19,7 @@ shaped_improvement:
     Per-step potential-based reward \Delta = F(U_after) - F(U_before).
 
 make_jx:
-    buildsJ_x spin operator for a d-level qudit via qutip's jmat.
+    buildsJ_x spin operator for a d-level qudit.
      off-diagonal elements are the physically correct Rabi frequencies.
 """
 
