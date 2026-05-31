@@ -94,7 +94,7 @@ def plot_run(csv_path: str, save: bool = True) -> str:
 
     iters, timesteps = [], []
     train_fid, train_pulses = [], []
-    eval_iters, eval_fid, eval_pulses = [], [], []
+    eval_ts, eval_fid, eval_pulses = [], [], []
 
     with open(csv_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -103,7 +103,7 @@ def plot_run(csv_path: str, save: bool = True) -> str:
             train_fid.append(float(row["train_fidelity"]) if row["train_fidelity"] else float("nan"))
             train_pulses.append(float(row["train_pulses"]) if row["train_pulses"] else float("nan"))
             if row["eval_fidelity"]:
-                eval_iters.append(int(row["iter"]))
+                eval_ts.append(int(row["timestep"]))
                 eval_fid.append(float(row["eval_fidelity"]))
                 eval_pulses.append(float(row["eval_pulses"]))
 
@@ -120,7 +120,6 @@ def plot_run(csv_path: str, save: bool = True) -> str:
     ax1.semilogy(timesteps, train_infid, color="steelblue", linewidth=1, alpha=0.6, label="train")
     ax1.semilogy(timesteps, _smooth(train_infid), color="steelblue", linewidth=2, label="train (smooth)")
     if eval_infid:
-        eval_ts = [timesteps[i - 1] for i in eval_iters]
         ax1.semilogy(eval_ts, eval_infid, "o--", color="tomato", linewidth=1.5, label="eval")
     ax1.set_ylabel("infidelity (1 − F)")
     ax1.legend(fontsize=8)
