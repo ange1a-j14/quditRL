@@ -48,6 +48,10 @@ class ActorCritic(nn.Module):
         dist = Normal(self.mean_head(h), torch.exp(self.log_std))
         return dist, self.value_head(h).squeeze(-1)
 
+    def mean_action(self, obs: torch.Tensor) -> torch.Tensor:
+        """Return the deterministic actor output for supervised training."""
+        return self.mean_head(self.trunk(obs))
+
     @torch.no_grad()
     def act(
         self, obs_np: np.ndarray, deterministic: bool = False

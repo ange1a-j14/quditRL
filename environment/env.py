@@ -32,7 +32,7 @@ Reward:
 
 END event:
     terminated — agent chose terminate signal > 0
-    truncated  — step count reached max_steps without termination (added for debugging)
+    truncated  — pulse count reached max_pulses without termination
 """
 
 from __future__ import annotations
@@ -64,14 +64,14 @@ class QuditEnv(gym.Env):
 
     Each episode targets a different unitary U_target, supplied via reset(U_target=...)`.  
     The agent applies sequential displacement
-    pulses until it either chooses to terminate or exhausts max_steps.
+    pulses until it either chooses to terminate or exhausts max_pulses.
 
     Parameters:
     d: Number of qudit levels (>= 2).
     h_config: Hamiltonian coupling
     reward_fn:
         See rewards for secham, defaults to unitary_distance.
-    max_steps:
+    max_pulses:
         Maximum number of pulses per episode before forced truncation.
         Defaults to 10 * d.
     min_terminate_pulses:
@@ -106,7 +106,7 @@ class QuditEnv(gym.Env):
         d: int,
         h_config: HamiltonianConfig = HamiltonianConfig.NEAREST_NEIGHBORS,
         reward_fn: RewardFn = unitary_distance,
-        max_steps: Optional[int] = None,
+        max_pulses: Optional[int] = None,
         min_terminate_pulses: int = 0,
     ) -> None:
         super().__init__()
@@ -117,7 +117,7 @@ class QuditEnv(gym.Env):
         self.d = d
         self.h_config = h_config
         self.reward_fn = reward_fn
-        self.max_steps = max_steps if max_steps is not None else 10 * d
+        self.max_pulses = max_pulses if max_pulses is not None else 10 * d
         self.min_terminate_pulses = min_terminate_pulses
 
 
@@ -216,9 +216,9 @@ class QuditEnv(gym.Env):
         terminate_signal = float(action[self.d])
 
         can_terminate = self._n_pulses >= self.min_terminate_pulses
-        hit_max_steps = self._n_pulses >= self.max_steps
+        hit_max_pulses = self._n_pulses >= self.max_pulses
         requested_terminate = terminate_signal > 0.0 and can_terminate
-        if hit_max_steps or requested_terminate:
+        if hit_max_pulses or requested_terminate:
             # Agent chose to end the episode — collect terminal reward
             # or back stop reward
             reward = self.reward_fn(self._U_current, self._U_target, self._n_pulses)

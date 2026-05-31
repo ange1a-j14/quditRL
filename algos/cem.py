@@ -139,8 +139,8 @@ def optimize_target(
     target: np.ndarray,
     cfg: CEMConfig,
     rng: np.random.Generator,
-) -> tuple[float, int]:
-    """Return the best fidelity found for one target."""
+) -> tuple[float, int, np.ndarray]:
+    """Return the best fidelity and pulse sequence found for one target."""
     seq_len = cfg.seq_len if cfg.seq_len is not None else 2 * cfg.d
     action_dim = cfg.d
 
@@ -151,6 +151,7 @@ def optimize_target(
     std[..., :-1] = np.pi
 
     best_fid = 0.0
+    best_actions = mean.copy()
     for _ in range(cfg.cem_iters):
         # Sample candidate trajectories, evaluate them, and keep the elites.
         raw = rng.normal(mean, std, size=(cfg.population, seq_len, action_dim))
@@ -171,9 +172,12 @@ def optimize_target(
         mean = cfg.smoothing * mean + (1.0 - cfg.smoothing) * elite_mean
         std = cfg.smoothing * std + (1.0 - cfg.smoothing) * elite_std
         std = np.maximum(std, cfg.min_std)
-        best_fid = max(best_fid, float(fidelities[elite_idx[-1]]))
+        iter_best = elite_idx[-1]
+        if float(fidelities[iter_best]) > best_fid:
+            best_fid = float(fidelities[iter_best])
+            best_actions = candidates[iter_best].copy()
 
-    return best_fid, seq_len
+    return best_fid, seq_len, best_actions
 
 
 def _evaluate_targets(
@@ -183,7 +187,7 @@ def _evaluate_targets(
 ) -> tuple[float, float]:
     fids, lens = [], []
     for target in targets:
-        fid, seq_len = optimize_target(target, cfg, rng)
+        fid, seq_len, _ = optimize_target(target, cfg, rng)
         fids.append(fid)
         lens.append(seq_len)
     return float(np.mean(fids)), float(np.mean(lens))
@@ -208,7 +212,7 @@ def train(
     with RunLogger(cfg.checkpoint_name) as logger:
         for it in range(1, cfg.n_targets + 1):
             # Each row is an independent optimization, not policy state.
-            fid, pulses = optimize_target(sampler(), cfg, rng)
+            fid, pulses, _ = optimize_target(sampler(), cfg, rng)
 
             ef, ep = None, None
             if eval_targets and it % cfg.eval_interval == 0:

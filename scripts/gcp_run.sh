@@ -26,8 +26,9 @@ LOCAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # TODO:
 # Change the cmd below to change train settings
 # Default training command (edit or override with TRAIN_CMD=...)
-# TRAIN_CMD="${TRAIN_CMD:-python research/train.py --d 5 --target haar --hidden 512 --seed 0 --total-timesteps 10000000}"
-TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo cem --d 4 --target haar --hidden 512 --seed 0 --cem-targets 200 --cem-iters 25 --cem-population 128 --cem-elites 16 --cem-seq-len 10}"
+TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo ppo --d 3 --target haar --hidden 512 --seed 0 --total-timesteps 5000000 --max-pulses 25 --reward l1}"
+# TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo cem --d 4 --target haar --hidden 512 --seed 0 --cem-targets 200 --cem-iters 25 --cem-population 128 --cem-elites 16 --cem-seq-len 10}"
+# TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo bc --d 3 --target haar --hidden 256 --max-pulses 10 --seed 0 --bc-targets 200 --bc-updates-per-target 20 --cem-iters 100 --cem-population 256 --cem-elites 16 --cem-seq-len 10}"
 
 GCLOUD_SSH=(gcloud compute ssh --zone "$ZONE" "$INSTANCE" --project "$PROJECT")
 GCLOUD_SCP=(gcloud compute scp --recurse --zone "$ZONE" --project "$PROJECT")
@@ -78,25 +79,32 @@ EOF
 
 run() {
   echo "Starting tmux session '${TMUX_SESSION}' on ${INSTANCE}..."
-  remote bash -s <<EOF
+  local train_cmd_b64
+  train_cmd_b64="$(printf '%s' "${TRAIN_CMD}" | base64 | tr -d '\n')"
+  remote bash -s -- "${REMOTE_DIR}" "${TMUX_SESSION}" "${train_cmd_b64}" <<'EOF'
 set -euo pipefail
+REMOTE_DIR="$1"
+TMUX_SESSION="$2"
+TRAIN_CMD="$(printf '%s' "$3" | base64 -d)"
 command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y tmux; }
-cd ~/${REMOTE_DIR}
+cd ~/"${REMOTE_DIR}"
 mkdir -p checkpoints output logs
 if [[ ! -f .venv/bin/activate ]]; then
   echo "ERROR: ~/quditRL/.venv not found. Run: ./scripts/gcp_run.sh setup"
   exit 1
 fi
-tmux has-session -t ${TMUX_SESSION} 2>/dev/null && tmux kill-session -t ${TMUX_SESSION}
-LOG_FILE="logs/train_\$(date +%Y%m%d_%H%M%S).log"
-tmux new-session -d -s ${TMUX_SESSION} bash -lc "cd ~/${REMOTE_DIR} && source .venv/bin/activate && export PYTHONUNBUFFERED=1 && ${TRAIN_CMD} 2>&1 | tee \${LOG_FILE}; echo; echo Done. Log: ~/${REMOTE_DIR}/\${LOG_FILE}; exec bash"
+tmux has-session -t "${TMUX_SESSION}" 2>/dev/null && tmux kill-session -t "${TMUX_SESSION}"
+LOG_FILE="logs/train_$(date +%Y%m%d_%H%M%S).log"
+tmux new-session -d -s "${TMUX_SESSION}" \
+  env REMOTE_DIR="${REMOTE_DIR}" LOG_FILE="${LOG_FILE}" TRAIN_CMD="${TRAIN_CMD}" \
+  bash -lc 'set -o pipefail; cd ~/"${REMOTE_DIR}" && source .venv/bin/activate && export PYTHONUNBUFFERED=1 && start_ts=$(date +%s); start_iso=$(date -Is); { echo "START_TIME=${start_iso}"; echo "TRAIN_CMD=${TRAIN_CMD}"; eval "${TRAIN_CMD}"; } 2>&1 | tee "${LOG_FILE}"; status=${PIPESTATUS[0]}; end_ts=$(date +%s); end_iso=$(date -Is); elapsed=$((end_ts - start_ts)); { echo; echo "END_TIME=${end_iso}"; echo "ELAPSED_SECONDS=${elapsed}"; echo "Done with exit code ${status}. Log: ~/${REMOTE_DIR}/${LOG_FILE}"; } | tee -a "${LOG_FILE}"; exit "${status}"'
 sleep 1
-if ! tmux has-session -t ${TMUX_SESSION} 2>/dev/null; then
+if ! tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
   echo "ERROR: tmux session exited immediately."
   echo "On the VM, check: ls -lt ~/${REMOTE_DIR}/logs/ && tail ~/${REMOTE_DIR}/logs/*.log"
   exit 1
 fi
-echo "Training started in tmux session '${TMUX_SESSION}' (user: \$(whoami))."
+echo "Training started in tmux session '${TMUX_SESSION}' (user: $(whoami))."
 echo "Attach on VM:  tmux attach -t ${TMUX_SESSION}"
 echo "Attach local:  ./scripts/gcp_run.sh attach"
 EOF
@@ -141,19 +149,20 @@ else
   echo "STATUS:stopped"
 fi
 
-latest_csv=""
-if [[ -d output ]]; then
-  latest_csv=\$(ls -t output/*.csv 2>/dev/null | head -1 || true)
-fi
-if [[ -n "\${latest_csv}" ]]; then
-  echo "CSV:\${latest_csv}"
-  echo "METRICS:\$(tail -1 "\${latest_csv}")"
-fi
-
 latest_log=\$(ls -t logs/train_*.log 2>/dev/null | head -1 || true)
 if [[ -n "\${latest_log}" ]]; then
   echo "LOG:\${latest_log}"
-  grep -E '\\[iter |    eval \\|' "\${latest_log}" 2>/dev/null | tail -3 || tail -3 "\${latest_log}"
+  latest_csv=\$(grep -oE 'Logging metrics to output/[^ ]+\.csv' "\${latest_log}" 2>/dev/null | sed 's/^Logging metrics to //' | tail -1 || true)
+  grep -F -e '[iter ' -e '[target ' -e '    eval |' "\${latest_log}" 2>/dev/null | tail -3 || tail -3 "\${latest_log}"
+else
+  latest_csv=""
+fi
+
+if [[ -n "\${latest_csv}" ]]; then
+  echo "CSV:\${latest_csv}"
+  echo "METRICS:\$(tail -1 "\${latest_csv}")"
+else
+  echo "CSV:"
 fi
 EOF
 )
@@ -172,12 +181,13 @@ EOF
     [[ -n "${log_path}" ]] && echo "log:    ${log_path}"
   fi
 
-  echo "${poll_info}" | grep -E '^\\[iter |^    eval \\|' || true
+  echo "${poll_info}" | grep -F -e '[iter ' -e '[target ' -e '    eval |' || true
 
   csv_remote=$(echo "${poll_info}" | sed -n 's/^CSV://p' | head -1)
   if [[ -z "${csv_remote}" ]]; then
     echo ""
-    echo "No metrics CSV yet — training may not have started logging."
+    echo "No metrics CSV found in the latest log yet."
+    echo "Not pulling older output, to avoid showing a stale plot."
     return 0
   fi
 

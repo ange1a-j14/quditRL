@@ -10,6 +10,7 @@ fidelity-style rewards use 1.
 
 from __future__ import annotations
 
+import math
 from typing import Callable
 
 import torch
@@ -87,4 +88,45 @@ def penalized_fidelity(step_penalty: float) -> RewardFn:
     """
     def _reward(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int) -> float:
         return unitary_fidelity(U_current, U_target) - step_penalty * n_pulses
+    return _reward
+
+
+def neg_log_infidelity(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int = 0) -> float:
+    """Negative log infidelity: -log(1 - F + eps).
+
+    Sharpens the signal near the solution: as F -> 1 the reward grows large,
+    rewarding the final approach to the target far more than raw fidelity.
+    """
+    eps = 1e-9
+    fidelity = unitary_fidelity(U_current, U_target)
+    return -math.log(max(1.0 - fidelity, eps))
+
+
+def make_reward(name: str, step_penalty: float = 0.0) -> RewardFn:
+    """Build a training reward by name, composing an optional per-pulse cost.
+
+    Parameters
+    ----------
+    name:
+        ``"l1"``            — negative L1 distance (smooth far-field gradient)
+        ``"fidelity"``      — gate fidelity in [0, 1]
+        ``"log-infidelity"`` — -log(1 - F), sharper near the solution
+    step_penalty:
+        Cost deducted for every pulse applied this episode (0 = none).
+    """
+    base_rewards: dict[str, RewardFn] = {
+        "l1": unitary_distance,
+        "fidelity": unitary_fidelity,
+        "log-infidelity": neg_log_infidelity,
+    }
+    if name not in base_rewards:
+        raise ValueError(
+            f"Unknown reward {name!r}. Choose from {list(base_rewards)}"
+        )
+    base = base_rewards[name]
+    if step_penalty <= 0.0:
+        return base
+
+    def _reward(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int) -> float:
+        return base(U_current, U_target, n_pulses) - step_penalty * n_pulses
     return _reward

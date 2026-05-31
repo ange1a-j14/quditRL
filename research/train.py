@@ -22,27 +22,25 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from environment import QuditEnv, HamiltonianConfig
-from environment.rewards import penalized_fidelity, unitary_fidelity
+from environment.rewards import make_reward
 from agents import ActorCritic
+from algos.bc import BCConfig, train as train_bc
 from algos.cem import CEMConfig, train as train_cem
 from algos.ppo import PPOConfig, train as train_ppo
 from wrappers import TargetSampling, ProgressReward
 from samplers import make_sampler, qft, haar_unitary
 
-ALGOS = ["ppo", "cem"]
+ALGOS = ["ppo", "cem", "bc"]
 MODELS = ["actor-critic"]
 
 
 def build_env(args):
-    reward_fn = (
-        penalized_fidelity(args.step_penalty)
-        if args.step_penalty > 0.0
-        else unitary_fidelity
-    )
+    reward_fn = make_reward(args.reward, args.step_penalty)
     kwargs = dict(
         d=args.d,
         h_config=HamiltonianConfig.NEAREST_NEIGHBORS,
         reward_fn=reward_fn,
+        max_pulses=args.max_pulses,
     )
     base = QuditEnv(**kwargs)
     return ProgressReward(TargetSampling(base, make_sampler(args.target, args.d, args.seed)))
@@ -73,18 +71,29 @@ def main():
     p.add_argument("--algo", choices=ALGOS, default="ppo")
     p.add_argument("--model", choices=MODELS, default="actor-critic")
     p.add_argument("--hidden", type=int, default=256, help="hidden layer width")
+    p.add_argument("--max-pulses", type=int, default=None, help="max pulses per episode")
     p.add_argument("--total-timesteps", type=int, default=5_000_000)
+    p.add_argument(
+        "--reward",
+        choices=["l1", "fidelity", "log-infidelity"],
+        default="l1",
+        help="training reward signal (fidelity is always logged/eval'd)",
+    )
     p.add_argument("--step-penalty", type=float, default=0.0, help="cost per pulse (0 = none)")
     p.add_argument("--cem-targets", type=int, default=200)
     p.add_argument("--cem-iters", type=int, default=25)
     p.add_argument("--cem-population", type=int, default=128)
     p.add_argument("--cem-elites", type=int, default=16)
     p.add_argument("--cem-seq-len", type=int, default=None)
+    p.add_argument("--bc-targets", type=int, default=200)
+    p.add_argument("--bc-batch-size", type=int, default=256)
+    p.add_argument("--bc-updates-per-target", type=int, default=20)
+    p.add_argument("--bc-lr", type=float, default=3e-4)
     p.add_argument(
         "--min-terminate-pulses-start",
         type=int,
-        default=None,
-        help="initial minimum pulses before terminate is allowed (default: max_steps)",
+        default=10,
+        help="initial minimum pulses before terminate is allowed",
     )
     p.add_argument(
         "--min-terminate-pulses-end",
@@ -95,7 +104,7 @@ def main():
     p.add_argument(
         "--min-terminate-anneal-frac",
         type=float,
-        default=1.0,
+        default=0.5,
         help="fraction of training used to anneal the terminate pulse floor",
     )
     p.add_argument("--seed", type=int, default=0)
@@ -108,6 +117,12 @@ def main():
     if args.algo == "cem":
         seq = args.cem_seq_len if args.cem_seq_len is not None else 2 * args.d
         name = f"{args.algo}_d{args.d}_{args.target}_seq{seq}_seed{args.seed}"
+    elif args.algo == "bc":
+        seq = args.cem_seq_len if args.cem_seq_len is not None else 2 * args.d
+        name = (
+            f"{args.algo}_{args.model}_d{args.d}_{args.target}_"
+            f"seq{seq}_h{args.hidden}_seed{args.seed}"
+        )
     else:
         name = f"{args.algo}_{args.model}_d{args.d}_{args.target}_h{args.hidden}_seed{args.seed}"
 
@@ -129,6 +144,48 @@ def main():
         )
         return
 
+    if args.algo == "bc":
+        env = build_env(args)
+        policy = build_policy(args)
+        teacher_cfg = CEMConfig(
+            d=args.d,
+            seq_len=args.cem_seq_len,
+            population=args.cem_population,
+            elites=args.cem_elites,
+            cem_iters=args.cem_iters,
+            seed=args.seed,
+        )
+        cfg = BCConfig(
+            d=args.d,
+            n_targets=args.bc_targets,
+            batch_size=args.bc_batch_size,
+            updates_per_target=args.bc_updates_per_target,
+            lr=args.bc_lr,
+            checkpoint_name=name,
+            checkpoint_meta=dict(
+                d=args.d,
+                target=args.target,
+                hidden=args.hidden,
+                reward=args.reward,
+                max_pulses=args.max_pulses,
+                seed=args.seed,
+                teacher="cem",
+                cem_seq_len=args.cem_seq_len,
+                cem_population=args.cem_population,
+                cem_elites=args.cem_elites,
+                cem_iters=args.cem_iters,
+            ),
+        )
+        train_bc(
+            make_sampler(args.target, args.d, args.seed),
+            env,
+            policy,
+            cfg,
+            teacher_cfg,
+            eval_targets=eval_targets,
+        )
+        return
+
     env = build_env(args)
     policy = build_policy(args)
     cfg = PPOConfig(
@@ -141,7 +198,9 @@ def main():
             d=args.d,
             target=args.target,
             hidden=args.hidden,
+            reward=args.reward,
             step_penalty=args.step_penalty,
+            max_pulses=args.max_pulses,
             min_terminate_pulses_start=args.min_terminate_pulses_start,
             min_terminate_pulses_end=args.min_terminate_pulses_end,
             min_terminate_anneal_frac=args.min_terminate_anneal_frac,

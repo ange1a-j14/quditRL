@@ -70,7 +70,7 @@ def test_action_space(env: QuditEnv) -> None:
 
 
 def test_truncation(env: QuditEnv, U_target: np.ndarray) -> None:
-    env2 = QuditEnv(d=env.d, max_steps=3)
+    env2 = QuditEnv(d=env.d, max_pulses=3)
     env2.reset(U_target=U_target)
     terminated = False
     for _ in range(10):
@@ -79,8 +79,8 @@ def test_truncation(env: QuditEnv, U_target: np.ndarray) -> None:
         _, _, terminated, _, _ = env2.step(action)
         if terminated:
             break
-    assert terminated, "Environment should have terminated after max_steps"
-    print("  max_steps termination check passed")
+    assert terminated, "Environment should have terminated after max_pulses"
+    print("  max_pulses termination check passed")
 
 
 def test_wrong_shape(env: QuditEnv) -> None:

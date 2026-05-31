@@ -122,7 +122,7 @@ def _base_env(env):
 
 def _set_min_terminate_pulses(env, value: int) -> None:
     base = _base_env(env)
-    base.min_terminate_pulses = max(0, min(int(value), base.max_steps))
+    base.min_terminate_pulses = max(0, min(int(value), base.max_pulses))
 
 
 def _scheduled_min_terminate_pulses(
@@ -133,7 +133,7 @@ def _scheduled_min_terminate_pulses(
 ) -> int:
     base = _base_env(env)
     start = (
-        base.max_steps
+        base.max_pulses
         if cfg.min_terminate_pulses_start is None
         else cfg.min_terminate_pulses_start
     )
@@ -141,7 +141,7 @@ def _scheduled_min_terminate_pulses(
     anneal_iters = max(1, int(n_iters * cfg.min_terminate_anneal_frac))
     progress = min(1.0, (it - 1) / max(1, anneal_iters - 1))
     value = round(start + progress * (end - start))
-    return max(0, min(value, base.max_steps))
+    return max(0, min(value, base.max_pulses))
 
 
 @torch.no_grad()
