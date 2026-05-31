@@ -74,6 +74,14 @@ class QuditEnv(gym.Env):
     max_steps:
         Maximum number of pulses per episode before forced truncation.
         Defaults to 10 * d.
+    min_terminate_pulses:
+        Minimum number of pulses that must be applied before the terminate
+        action is honored, preventing the policy from discovering the
+        zero-pulse local optimum created by progress rewards: terminating at
+        reset gives exactly zero shaped return, while exploratory pulses can
+        initially make the distance worse and receive negative return.  PPO
+        anneals this floor during training so the agent first learns useful
+        pulse sequences, then gradually regains learned early termination.
 
     Observation space:
     gymnasium.spaces.Dict with keys:
@@ -99,6 +107,7 @@ class QuditEnv(gym.Env):
         h_config: HamiltonianConfig = HamiltonianConfig.NEAREST_NEIGHBORS,
         reward_fn: RewardFn = unitary_distance,
         max_steps: Optional[int] = None,
+        min_terminate_pulses: int = 0,
     ) -> None:
         super().__init__()
 
@@ -109,6 +118,7 @@ class QuditEnv(gym.Env):
         self.h_config = h_config
         self.reward_fn = reward_fn
         self.max_steps = max_steps if max_steps is not None else 10 * d
+        self.min_terminate_pulses = min_terminate_pulses
 
 
         # Setup gym spaces using the gymnasium mod
@@ -205,7 +215,10 @@ class QuditEnv(gym.Env):
         # if terminate, end the round
         terminate_signal = float(action[self.d])
 
-        if terminate_signal > 0.0 or self._n_pulses >= self.max_steps:
+        can_terminate = self._n_pulses >= self.min_terminate_pulses
+        hit_max_steps = self._n_pulses >= self.max_steps
+        requested_terminate = terminate_signal > 0.0 and can_terminate
+        if hit_max_steps or requested_terminate:
             # Agent chose to end the episode — collect terminal reward
             # or back stop reward
             reward = self.reward_fn(self._U_current, self._U_target, self._n_pulses)

@@ -35,6 +35,9 @@ class PPOConfig:
     device: str = "cpu"
     total_timesteps: int = 1_000_000
     eval_interval: int = 5          # evaluate every N iterations
+    min_terminate_pulses_start: int | None = None
+    min_terminate_pulses_end: int = 0
+    min_terminate_anneal_frac: float = 1.0
     checkpoint_dir: str = "checkpoints"
     checkpoint_name: str = "ppo"
     checkpoint_meta: dict[str, Any] = field(default_factory=dict)
@@ -111,6 +114,36 @@ def _ppo_update(policy, optimizer, buf: dict, adv: np.ndarray, ret: np.ndarray, 
             optimizer.step()
 
 
+def _base_env(env):
+    while hasattr(env, "env"):
+        env = env.env
+    return env
+
+
+def _set_min_terminate_pulses(env, value: int) -> None:
+    base = _base_env(env)
+    base.min_terminate_pulses = max(0, min(int(value), base.max_steps))
+
+
+def _scheduled_min_terminate_pulses(
+    cfg: PPOConfig,
+    env,
+    it: int,
+    n_iters: int,
+) -> int:
+    base = _base_env(env)
+    start = (
+        base.max_steps
+        if cfg.min_terminate_pulses_start is None
+        else cfg.min_terminate_pulses_start
+    )
+    end = cfg.min_terminate_pulses_end
+    anneal_iters = max(1, int(n_iters * cfg.min_terminate_anneal_frac))
+    progress = min(1.0, (it - 1) / max(1, anneal_iters - 1))
+    value = round(start + progress * (end - start))
+    return max(0, min(value, base.max_steps))
+
+
 @torch.no_grad()
 def evaluate(env, policy, targets: list) -> tuple[float, float]:
     """Greedy rollout on each target; returns (mean_distance, mean_pulses)."""
@@ -145,12 +178,35 @@ def train(env, policy, cfg: PPOConfig, eval_targets: list | None = None) -> None
     state = {"obs": obs}
     n_iters = cfg.total_timesteps // cfg.rollout_steps
 
-    print(f"PPO | {n_iters} iters x {cfg.rollout_steps} steps | {cfg.checkpoint_name}")
+    print(
+        f"PPO | {n_iters} iters x {cfg.rollout_steps} steps | "
+        f"{cfg.checkpoint_name}"
+    )
+    print(
+        "Terminate curriculum | "
+        f"min_pulses "
+        f"{_scheduled_min_terminate_pulses(cfg, env, 1, n_iters)} -> "
+        f"{_scheduled_min_terminate_pulses(cfg, env, n_iters, n_iters)}"
+    )
 
     with RunLogger(cfg.checkpoint_name) as logger:
         for it in range(1, n_iters + 1):
-            buf, last_value, ep_dist, ep_len = _collect_rollout(env, policy, state, cfg.rollout_steps)
-            adv, ret = _compute_gae(buf["rew"], buf["val"], buf["done"], last_value, cfg.gamma, cfg.gae_lambda)
+            min_pulses = _scheduled_min_terminate_pulses(cfg, env, it, n_iters)
+            _set_min_terminate_pulses(env, min_pulses)
+            buf, last_value, ep_dist, ep_len = _collect_rollout(
+                env,
+                policy,
+                state,
+                cfg.rollout_steps,
+            )
+            adv, ret = _compute_gae(
+                buf["rew"],
+                buf["val"],
+                buf["done"],
+                last_value,
+                cfg.gamma,
+                cfg.gae_lambda,
+            )
             _ppo_update(policy, optimizer, buf, adv, ret, cfg)
 
             d_ = np.mean(ep_dist) if ep_dist else float("nan")

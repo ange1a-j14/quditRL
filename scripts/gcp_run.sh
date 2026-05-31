@@ -26,7 +26,8 @@ LOCAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # TODO:
 # Change the cmd below to change train settings
 # Default training command (edit or override with TRAIN_CMD=...)
-TRAIN_CMD="${TRAIN_CMD:-python research/train.py --d 3 --target haar --hidden 256 --seed 0}"
+# TRAIN_CMD="${TRAIN_CMD:-python research/train.py --d 5 --target haar --hidden 512 --seed 0 --total-timesteps 10000000}"
+TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo cem --d 4 --target haar --hidden 512 --seed 0 --cem-targets 200 --cem-iters 25 --cem-population 128 --cem-elites 16 --cem-seq-len 10}"
 
 GCLOUD_SSH=(gcloud compute ssh --zone "$ZONE" "$INSTANCE" --project "$PROJECT")
 GCLOUD_SCP=(gcloud compute scp --recurse --zone "$ZONE" --project "$PROJECT")
