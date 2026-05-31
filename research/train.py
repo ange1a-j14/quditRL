@@ -23,14 +23,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from environment import QuditEnv, HamiltonianConfig
 from environment.rewards import make_reward
-from agents import ActorCritic
+from agents import ActorCritic, PulseSequencePlanner
+from algos.amortized import AmortizedConfig, train as train_amortized
 from algos.bc import BCConfig, train as train_bc
 from algos.cem import CEMConfig, train as train_cem
 from algos.ppo import PPOConfig, train as train_ppo
 from wrappers import TargetSampling, ProgressReward
 from samplers import make_sampler, qft, haar_unitary
 
-ALGOS = ["ppo", "cem", "bc"]
+ALGOS = ["ppo", "cem", "bc", "amortized"]
 MODELS = ["actor-critic"]
 
 
@@ -80,6 +81,14 @@ def main():
         help="training reward signal (fidelity is always logged/eval'd)",
     )
     p.add_argument("--step-penalty", type=float, default=0.0, help="cost per pulse (0 = none)")
+    p.add_argument(
+        "--gamma",
+        type=float,
+        default=1.0,
+        help="discount factor; 1.0 lets progress reward value a future "
+             "recovery as much as an early gain (no penalty for stepping "
+             "away to come back)",
+    )
     p.add_argument("--cem-targets", type=int, default=200)
     p.add_argument("--cem-iters", type=int, default=25)
     p.add_argument("--cem-population", type=int, default=128)
@@ -89,6 +98,16 @@ def main():
     p.add_argument("--bc-batch-size", type=int, default=256)
     p.add_argument("--bc-updates-per-target", type=int, default=20)
     p.add_argument("--bc-lr", type=float, default=3e-4)
+    p.add_argument("--seq-len", type=int, default=None, help="amortized pulse sequence length (default 2*d)")
+    p.add_argument("--batch-targets", type=int, default=256, help="amortized targets per gradient step")
+    p.add_argument("--amortized-iters", type=int, default=20000, help="amortized gradient steps")
+    p.add_argument("--lr", type=float, default=1e-3, help="amortized learning rate")
+    p.add_argument(
+        "--loss",
+        choices=["infidelity", "log-infidelity", "l1"],
+        default="infidelity",
+        help="amortized training loss",
+    )
     p.add_argument(
         "--min-terminate-pulses-start",
         type=int,
@@ -98,7 +117,7 @@ def main():
     p.add_argument(
         "--min-terminate-pulses-end",
         type=int,
-        default=0,
+        default=4,
         help="final minimum pulses before terminate is allowed",
     )
     p.add_argument(
@@ -123,8 +142,42 @@ def main():
             f"{args.algo}_{args.model}_d{args.d}_{args.target}_"
             f"seq{seq}_h{args.hidden}_seed{args.seed}"
         )
+    elif args.algo == "amortized":
+        seq = args.seq_len if args.seq_len is not None else 2 * args.d
+        name = (
+            f"{args.algo}_d{args.d}_{args.target}_"
+            f"seq{seq}_h{args.hidden}_seed{args.seed}"
+        )
     else:
         name = f"{args.algo}_{args.model}_d{args.d}_{args.target}_h{args.hidden}_seed{args.seed}"
+
+    if args.algo == "amortized":
+        seq_len = args.seq_len if args.seq_len is not None else 2 * args.d
+        planner = PulseSequencePlanner(args.d, seq_len, hidden=args.hidden)
+        cfg = AmortizedConfig(
+            d=args.d,
+            seq_len=seq_len,
+            iters=args.amortized_iters,
+            batch_targets=args.batch_targets,
+            lr=args.lr,
+            loss=args.loss,
+            checkpoint_name=name,
+            checkpoint_meta=dict(
+                d=args.d,
+                target=args.target,
+                hidden=args.hidden,
+                seq_len=seq_len,
+                loss=args.loss,
+                seed=args.seed,
+            ),
+        )
+        train_amortized(
+            make_sampler(args.target, args.d, args.seed),
+            planner,
+            cfg,
+            eval_targets=eval_targets,
+        )
+        return
 
     if args.algo == "cem":
         cfg = CEMConfig(
@@ -190,6 +243,7 @@ def main():
     policy = build_policy(args)
     cfg = PPOConfig(
         total_timesteps=args.total_timesteps,
+        gamma=args.gamma,
         min_terminate_pulses_start=args.min_terminate_pulses_start,
         min_terminate_pulses_end=args.min_terminate_pulses_end,
         min_terminate_anneal_frac=args.min_terminate_anneal_frac,
@@ -199,6 +253,7 @@ def main():
             target=args.target,
             hidden=args.hidden,
             reward=args.reward,
+            gamma=args.gamma,
             step_penalty=args.step_penalty,
             max_pulses=args.max_pulses,
             min_terminate_pulses_start=args.min_terminate_pulses_start,
