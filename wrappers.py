@@ -18,7 +18,11 @@ class TargetSampling(gym.Wrapper):
         self.sampler = sampler
 
     def reset(self, *, seed=None, options=None):
-        U = options["U_target"] if options and "U_target" in options else self.sampler()
+        U = (
+            options["U_target"]
+            if options and "U_target" in options
+            else self.sampler()
+        )
         return self.env.reset(U_target=U, seed=seed)
 
 
@@ -27,9 +31,8 @@ class ProgressReward(gym.Wrapper):
 
         r_t = Phi_t - Phi_{t-1}
 
-    where Phi is the raw reward from the env (e.g. -L1 distance, or a
-    penalized variant via penalized_distance). This keeps the signal dense
-    so the agent receives feedback on every pulse rather than only at
+    where Phi is the raw reward/potential from the env. This keeps the signal
+    dense so the agent receives feedback on every pulse rather than only at
     termination.
     """
 
@@ -39,7 +42,7 @@ class ProgressReward(gym.Wrapper):
 
     def reset(self, *, seed=None, options=None):
         obs, info = self.env.reset(seed=seed, options=options)
-        self._phi_prev = -info["distance"]
+        self._phi_prev = info["potential"]
         return obs, info
 
     def step(self, action):
@@ -55,4 +58,6 @@ def flatten_obs(obs: dict) -> np.ndarray:
     Concatenates the ravel of U_current and U_target, each stored as
     (2, d, d) real/imag arrays, giving a vector of length 4*d*d.
     """
-    return np.concatenate([obs["U_current"].ravel(), obs["U_target"].ravel()]).astype(np.float32)
+    return np.concatenate(
+        [obs["U_current"].ravel(), obs["U_target"].ravel()]
+    ).astype(np.float32)

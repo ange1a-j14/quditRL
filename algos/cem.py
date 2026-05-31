@@ -6,16 +6,20 @@ parameters and logs the best sequence found.  If this succeeds where PPO fails,
 the issue is policy optimization/exploration; if this also fails, the action
 parameterization or target difficulty is the likely bottleneck.
 
-1. Maintain a Gaussian distribution over full pulse sequences. 
-    For d=5, seq_len=10, each pulse has d parameters: 4 phases + theta. So CEM optimizes a vector shaped:
-    seq_len x (d-1) phases + theta = 10 pulses x 5 parameters
-2. Sample many candidate pulse sequences. Example: --cem-population 128 samples 128 full 10-pulse sequences.
+1. Maintain a Gaussian distribution over full pulse sequences.
+    For d=5 and seq_len=10, each pulse has d parameters:
+    4 phases + theta, for a 10 x 5 optimization variable.
+2. Sample many candidate pulse sequences.
+    Example: --cem-population 128 samples 128 full sequences.
 3. Simulate every candidate. It composes:
 U = D_10 @ ... @ D_2 @ D_1 @ I
-and measures L1 distance to the target.
-4. Keep the best candidates. e.g.: --cem-elites 16 keeps the 16 lowest-distance sequences.
-5. Refit the Gaussian toward those elites. The mean moves toward good pulse sequences, and std shrinks around them.
-6. Repeat. Example: --cem-iters 25 means 25 rounds of sample -> score -> keep elites -> refit.
+and measures fidelity to the target.
+4. Keep the best candidates.
+    Example: --cem-elites 16 keeps the 16 highest-fidelity sequences.
+5. Refit the Gaussian toward those elites.
+    The mean moves toward good pulse sequences, and std shrinks around them.
+6. Repeat.
+    Example: --cem-iters 25 means 25 rounds of sample/score/refit.
 
 PPO failing for noisy longer rewards, Cross-entropy should help.
 """
@@ -83,7 +87,7 @@ def _make_jx_offdiag(d: int, device: str) -> torch.Tensor:
     return 0.5 * torch.sqrt((k + 1) * (d - 1 - k))
 
 
-def _batch_rollout_distances(
+def _batch_rollout_fidelities(
     actions: np.ndarray,
     target: np.ndarray,
     h_config: HamiltonianConfig,
@@ -94,18 +98,21 @@ def _batch_rollout_distances(
     The input has shape (population, seq_len, d).  For d-level systems each
     pulse has d parameters: d-1 phases plus one rotation angle.  We construct
     the Hamiltonian and matrix exponential for every candidate pulse in a
-    batch, compose the candidate unitaries, then return L1 distances to the
+    batch, compose the candidate unitaries, then return fidelities to the
     target.
     """
     if h_config != HamiltonianConfig.NEAREST_NEIGHBORS:
-        raise NotImplementedError("CEM currently supports nearest-neighbor H only.")
+        raise NotImplementedError(
+            "CEM currently supports nearest-neighbor H only."
+        )
 
     actions_t = torch.as_tensor(actions, dtype=torch.float32, device=device)
     target_t = torch.as_tensor(target, dtype=torch.cfloat, device=device)
     population, seq_len, action_dim = actions_t.shape
     d = action_dim
     off_diag = _make_jx_offdiag(d, device)
-    U = torch.eye(d, dtype=torch.cfloat, device=device).expand(population, d, d)
+    U = torch.eye(d, dtype=torch.cfloat, device=device)
+    U = U.expand(population, d, d)
     U = U.clone()
 
     for step in range(seq_len):
@@ -120,11 +127,12 @@ def _batch_rollout_distances(
         H[:, idx + 1, idx] = off_diag * phases.conj()
 
         # D(phi, theta) = exp(-i * theta * H_rot(phi)).
-        pulse = torch.linalg.matrix_exp(-1j * theta[:, None, None] * H)
+        pulse = torch.matrix_exp(-1j * theta[:, None, None] * H)
         U = pulse @ U
 
-    dists = torch.sum(torch.abs(U - target_t), dim=(1, 2))
-    return dists.detach().cpu().numpy()
+    overlaps = torch.einsum("bij,ji->b", U.conj().transpose(-2, -1), target_t)
+    fidelities = overlaps.abs().square() / (d * d)
+    return fidelities.detach().cpu().numpy()
 
 
 def optimize_target(
@@ -132,7 +140,7 @@ def optimize_target(
     cfg: CEMConfig,
     rng: np.random.Generator,
 ) -> tuple[float, int]:
-    """Return the best L1 distance found for one target."""
+    """Return the best fidelity found for one target."""
     seq_len = cfg.seq_len if cfg.seq_len is not None else 2 * cfg.d
     action_dim = cfg.d
 
@@ -142,19 +150,19 @@ def optimize_target(
     std = np.full_like(mean, cfg.init_std)
     std[..., :-1] = np.pi
 
-    best_dist = float("inf")
+    best_fid = 0.0
     for _ in range(cfg.cem_iters):
         # Sample candidate trajectories, evaluate them, and keep the elites.
         raw = rng.normal(mean, std, size=(cfg.population, seq_len, action_dim))
         candidates = _bounded_actions(raw.astype(np.float32))
-        dists = _batch_rollout_distances(
+        fidelities = _batch_rollout_fidelities(
             candidates,
             target,
             cfg.h_config,
             cfg.device,
         )
 
-        elite_idx = np.argsort(dists)[: cfg.elites]
+        elite_idx = np.argsort(fidelities)[-cfg.elites:]
         elites = candidates[elite_idx]
         elite_mean = elites.mean(axis=0)
         elite_std = elites.std(axis=0)
@@ -163,9 +171,9 @@ def optimize_target(
         mean = cfg.smoothing * mean + (1.0 - cfg.smoothing) * elite_mean
         std = cfg.smoothing * std + (1.0 - cfg.smoothing) * elite_std
         std = np.maximum(std, cfg.min_std)
-        best_dist = min(best_dist, float(dists[elite_idx[0]]))
+        best_fid = max(best_fid, float(fidelities[elite_idx[-1]]))
 
-    return best_dist, seq_len
+    return best_fid, seq_len
 
 
 def _evaluate_targets(
@@ -173,12 +181,12 @@ def _evaluate_targets(
     cfg: CEMConfig,
     rng: np.random.Generator,
 ) -> tuple[float, float]:
-    dists, lens = [], []
+    fids, lens = [], []
     for target in targets:
-        dist, seq_len = optimize_target(target, cfg, rng)
-        dists.append(dist)
+        fid, seq_len = optimize_target(target, cfg, rng)
+        fids.append(fid)
         lens.append(seq_len)
-    return float(np.mean(dists)), float(np.mean(lens))
+    return float(np.mean(fids)), float(np.mean(lens))
 
 
 def train(
@@ -199,26 +207,26 @@ def train(
 
     with RunLogger(cfg.checkpoint_name) as logger:
         for it in range(1, cfg.n_targets + 1):
-            # Each row is an independent optimization problem, not policy state.
-            dist, pulses = optimize_target(sampler(), cfg, rng)
+            # Each row is an independent optimization, not policy state.
+            fid, pulses = optimize_target(sampler(), cfg, rng)
 
-            ed, ep = None, None
+            ef, ep = None, None
             if eval_targets and it % cfg.eval_interval == 0:
-                ed, ep = _evaluate_targets(eval_targets, cfg, rng)
-                print(f"    eval | mean_dist={ed:7.3f}  pulses={ep:5.2f}")
+                ef, ep = _evaluate_targets(eval_targets, cfg, rng)
+                print(f"    eval | mean_fid={ef:.4f}  pulses={ep:5.2f}")
 
             timestep = it * evals_per_target
             print(
                 f"[target {it:4d}] evals={timestep:7d}  "
-                f"train_dist={dist:7.3f}  pulses={pulses:5.2f}"
+                f"train_fid={fid:.4f}  pulses={pulses:5.2f}"
             )
             logger.log(
                 iter=it,
                 timestep=timestep,
                 episodes=1,
-                train_dist=dist,
+                train_fidelity=fid,
                 train_pulses=pulses,
-                eval_dist=ed,
+                eval_fidelity=ef,
                 eval_pulses=ep,
             )
 

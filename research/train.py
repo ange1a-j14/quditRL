@@ -22,7 +22,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from environment import QuditEnv, HamiltonianConfig
-from environment.rewards import penalized_distance
+from environment.rewards import penalized_fidelity, unitary_fidelity
 from agents import ActorCritic
 from algos.cem import CEMConfig, train as train_cem
 from algos.ppo import PPOConfig, train as train_ppo
@@ -34,10 +34,16 @@ MODELS = ["actor-critic"]
 
 
 def build_env(args):
-    reward_fn = penalized_distance(args.step_penalty) if args.step_penalty > 0.0 else None
-    kwargs = dict(d=args.d, h_config=HamiltonianConfig.NEAREST_NEIGHBORS)
-    if reward_fn is not None:
-        kwargs["reward_fn"] = reward_fn
+    reward_fn = (
+        penalized_fidelity(args.step_penalty)
+        if args.step_penalty > 0.0
+        else unitary_fidelity
+    )
+    kwargs = dict(
+        d=args.d,
+        h_config=HamiltonianConfig.NEAREST_NEIGHBORS,
+        reward_fn=reward_fn,
+    )
     base = QuditEnv(**kwargs)
     return ProgressReward(TargetSampling(base, make_sampler(args.target, args.d, args.seed)))
 

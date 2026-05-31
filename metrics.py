@@ -19,7 +19,7 @@ import numpy as np
 
 OUTPUT_DIR = "output"
 
-_FIELDS = ["iter", "timestep", "episodes", "train_dist", "train_pulses", "eval_dist", "eval_pulses"]
+_FIELDS = ["iter", "timestep", "episodes", "train_fidelity", "train_pulses", "eval_fidelity", "eval_pulses"]
 
 
 class RunLogger:
@@ -47,18 +47,18 @@ class RunLogger:
         iter: int,  # noqa: A002
         timestep: int,
         episodes: int,
-        train_dist: float,
+        train_fidelity: float,
         train_pulses: float,
-        eval_dist: Optional[float] = None,
+        eval_fidelity: Optional[float] = None,
         eval_pulses: Optional[float] = None,
     ) -> None:
         self._writer.writerow({
             "iter": iter,
             "timestep": timestep,
             "episodes": episodes,
-            "train_dist": f"{train_dist:.6f}",
+            "train_fidelity": f"{train_fidelity:.6f}",
             "train_pulses": f"{train_pulses:.4f}",
-            "eval_dist": f"{eval_dist:.6f}" if eval_dist is not None else "",
+            "eval_fidelity": f"{eval_fidelity:.6f}" if eval_fidelity is not None else "",
             "eval_pulses": f"{eval_pulses:.4f}" if eval_pulses is not None else "",
         })
 
@@ -93,32 +93,38 @@ def plot_run(csv_path: str, save: bool = True) -> str:
         raise ImportError("matplotlib is required for plotting: pip install matplotlib") from e
 
     iters, timesteps = [], []
-    train_dist, train_pulses = [], []
-    eval_iters, eval_dist, eval_pulses = [], [], []
+    train_fid, train_pulses = [], []
+    eval_iters, eval_fid, eval_pulses = [], [], []
 
     with open(csv_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             iters.append(int(row["iter"]))
             timesteps.append(int(row["timestep"]))
-            train_dist.append(float(row["train_dist"]) if row["train_dist"] else float("nan"))
+            train_fid.append(float(row["train_fidelity"]) if row["train_fidelity"] else float("nan"))
             train_pulses.append(float(row["train_pulses"]) if row["train_pulses"] else float("nan"))
-            if row["eval_dist"]:
+            if row["eval_fidelity"]:
                 eval_iters.append(int(row["iter"]))
-                eval_dist.append(float(row["eval_dist"]))
+                eval_fid.append(float(row["eval_fidelity"]))
                 eval_pulses.append(float(row["eval_pulses"]))
+
+    # Convert fidelity -> infidelity (1 - F) for a log-scale "gate error" view.
+    # Floor at a small positive value so perfect fidelity (F=1) is plottable on a log axis.
+    _floor = 1e-9
+    train_infid = [max(1.0 - f, _floor) if not np.isnan(f) else float("nan") for f in train_fid]
+    eval_infid = [max(1.0 - f, _floor) for f in eval_fid]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
     fig.suptitle(os.path.splitext(os.path.basename(csv_path))[0], fontsize=11)
 
-    # Distance panel
-    ax1.plot(timesteps, train_dist, color="steelblue", linewidth=1, alpha=0.6, label="train")
-    ax1.plot(timesteps, _smooth(train_dist), color="steelblue", linewidth=2, label="train (smooth)")
-    if eval_dist:
+    # Infidelity panel (log scale): 1 - F, lower is better
+    ax1.semilogy(timesteps, train_infid, color="steelblue", linewidth=1, alpha=0.6, label="train")
+    ax1.semilogy(timesteps, _smooth(train_infid), color="steelblue", linewidth=2, label="train (smooth)")
+    if eval_infid:
         eval_ts = [timesteps[i - 1] for i in eval_iters]
-        ax1.plot(eval_ts, eval_dist, "o--", color="tomato", linewidth=1.5, label="eval")
-    ax1.set_ylabel("L1 distance")
+        ax1.semilogy(eval_ts, eval_infid, "o--", color="tomato", linewidth=1.5, label="eval")
+    ax1.set_ylabel("infidelity (1 − F)")
     ax1.legend(fontsize=8)
-    ax1.grid(True, alpha=0.3)
+    ax1.grid(True, alpha=0.3, which="both")
 
     # Pulse count panel
     ax2.plot(timesteps, train_pulses, color="mediumseagreen", linewidth=1, alpha=0.6, label="train")

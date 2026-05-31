@@ -4,7 +4,8 @@ Reward functions for QuditEnv.
 All reward functions must match the RewardFn signature:
     (U_current, U_target, n_pulses) -> float
 
-Higher reward is better; a perfect match yields 0.
+Higher reward is better.  Distance-style rewards use 0 for a perfect match;
+fidelity-style rewards use 1.
 """
 
 from __future__ import annotations
@@ -74,4 +75,16 @@ def penalized_distance(step_penalty: float) -> RewardFn:
     def _reward(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int) -> float:
         dist = -torch.sum((U_current - U_target).abs()).item()
         return dist - step_penalty * n_pulses
+    return _reward
+
+
+def penalized_fidelity(step_penalty: float) -> RewardFn:
+    """Reward factory: gate fidelity with a flat per-pulse cost.
+
+    r(V, U, n) = F(V, U) - step_penalty * n_pulses
+
+    A perfect match with no pulse penalty yields 1.0. Higher is better.
+    """
+    def _reward(U_current: torch.Tensor, U_target: torch.Tensor, n_pulses: int) -> float:
+        return unitary_fidelity(U_current, U_target) - step_penalty * n_pulses
     return _reward
