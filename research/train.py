@@ -109,6 +109,12 @@ def main():
         help="amortized training loss",
     )
     p.add_argument(
+        "--pulse-penalty",
+        type=float,
+        default=0.0,
+        help="amortized per-pulse cost; >0 makes the halting head exit early",
+    )
+    p.add_argument(
         "--min-terminate-pulses-start",
         type=int,
         default=10,
@@ -161,6 +167,7 @@ def main():
             batch_targets=args.batch_targets,
             lr=args.lr,
             loss=args.loss,
+            pulse_penalty=args.pulse_penalty,
             checkpoint_name=name,
             checkpoint_meta=dict(
                 d=args.d,
@@ -168,6 +175,7 @@ def main():
                 hidden=args.hidden,
                 seq_len=seq_len,
                 loss=args.loss,
+                pulse_penalty=args.pulse_penalty,
                 seed=args.seed,
             ),
         )
