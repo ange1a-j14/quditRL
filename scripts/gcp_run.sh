@@ -4,15 +4,18 @@
 # Usage (from repo root):
 #   ./scripts/gcp_run.sh sync          # push local code to the VM
 #   ./scripts/gcp_run.sh setup         # sync + first-time venv/deps on the VM
-#   ./scripts/gcp_run.sh run           # start training in a detached tmux session
+#   ./scripts/gcp_run.sh run           # sync + run experiments from scripts/experiments.txt
 #   ./scripts/gcp_run.sh attach        # attach to the tmux session
 #   ./scripts/gcp_run.sh logs          # tail the run log
 #   ./scripts/gcp_run.sh poll          # status + pull latest metrics plot and open it
 #   ./scripts/gcp_run.sh pull          # copy checkpoints/output back to local machine
 #   ./scripts/gcp_run.sh ssh           # open an interactive shell on the VM
 #
-# Override the default train command:
+# Experiments (one command per line) live in scripts/experiments.txt.
+# Override for a single run:
 #   TRAIN_CMD='python research/train.py --d 4 --target haar --seed 1' ./scripts/gcp_run.sh run
+# Continue after a failed experiment:
+#   CONTINUE_ON_ERROR=1 ./scripts/gcp_run.sh run
 
 set -euo pipefail
 
@@ -22,16 +25,36 @@ INSTANCE="gpu-l4-1"
 REMOTE_DIR="quditRL"
 TMUX_SESSION="quditrl"
 LOCAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+EXPERIMENTS_FILE="${EXPERIMENTS_FILE:-${LOCAL_ROOT}/scripts/experiments.txt}"
+CONTINUE_ON_ERROR="${CONTINUE_ON_ERROR:-0}"
 
-# TODO:
-# Change the cmd below to change train settings
-# Default training command (edit or override with TRAIN_CMD=...)
 # # TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo bc --d 3 --target haar --hidden 256 --max-pulses 10 --seed 0 --bc-targets 200 --bc-updates-per-target 20 --cem-iters 100 --cem-population 256 --cem-elites 16 --cem-seq-len 10}"
 # TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo ppo --d 3 --target haar --hidden 512 --seed 0 --total-timesteps 5000000 --max-pulses 25 --reward l1}"
 # TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo cem --d 4 --target haar --hidden 512 --seed 0 --cem-targets 200 --cem-iters 25 --cem-population 128 --cem-elites 16 --cem-seq-len 10}"
 # TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo bc --d 3 --target haar --hidden 256 --max-pulses 10 --seed 0 --bc-targets 200 --bc-updates-per-target 20 --cem-iters 100 --cem-population 256 --cem-elites 16 --cem-seq-len 10}"
-TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo amortized --d 3 --target haar --hidden 512 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.01 --seed 0}"
+# TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo amortized --d 3 --target haar --hidden 1056 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.001 --seed 0}"
+TRAIN_CMDS=()
 
+load_train_cmds() {
+  TRAIN_CMDS=()
+  if [[ -n "${TRAIN_CMD:-}" ]]; then
+    TRAIN_CMDS=("$TRAIN_CMD")
+    return
+  fi
+  if [[ ! -f "${EXPERIMENTS_FILE}" ]]; then
+    echo "ERROR: no TRAIN_CMD and experiments file not found: ${EXPERIMENTS_FILE}"
+    exit 1
+  fi
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ "${line}" =~ ^[[:space:]]*$ ]] && continue
+    TRAIN_CMDS+=("${line}")
+  done < "${EXPERIMENTS_FILE}"
+  if [[ ${#TRAIN_CMDS[@]} -eq 0 ]]; then
+    echo "ERROR: no experiments in ${EXPERIMENTS_FILE}"
+    exit 1
+  fi
+}
 
 GCLOUD_SSH=(gcloud compute ssh --zone "$ZONE" "$INSTANCE" --project "$PROJECT")
 GCLOUD_SCP=(gcloud compute scp --recurse --zone "$ZONE" --project "$PROJECT")
@@ -81,14 +104,21 @@ EOF
 }
 
 run() {
-  echo "Starting tmux session '${TMUX_SESSION}' on ${INSTANCE}..."
-  local train_cmd_b64
-  train_cmd_b64="$(printf '%s' "${TRAIN_CMD}" | base64 | tr -d '\n')"
-  remote bash -s -- "${REMOTE_DIR}" "${TMUX_SESSION}" "${train_cmd_b64}" <<'EOF'
+  load_train_cmds
+  echo "Starting tmux session '${TMUX_SESSION}' on ${INSTANCE} with ${#TRAIN_CMDS[@]} experiment(s)..."
+  local i
+  for i in "${!TRAIN_CMDS[@]}"; do
+    echo "  $((i + 1)). ${TRAIN_CMDS[$i]}"
+  done
+
+  local train_cmds_b64
+  train_cmds_b64="$(printf '%s\n' "${TRAIN_CMDS[@]}" | base64 | tr -d '\n')"
+  remote bash -s -- "${REMOTE_DIR}" "${TMUX_SESSION}" "${train_cmds_b64}" "${CONTINUE_ON_ERROR}" <<'EOF'
 set -euo pipefail
 REMOTE_DIR="$1"
 TMUX_SESSION="$2"
-TRAIN_CMD="$(printf '%s' "$3" | base64 -d)"
+TRAIN_CMDS_B64="$3"
+CONTINUE_ON_ERROR="$4"
 command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y tmux; }
 cd ~/"${REMOTE_DIR}"
 mkdir -p checkpoints output logs
@@ -99,8 +129,8 @@ fi
 tmux has-session -t "${TMUX_SESSION}" 2>/dev/null && tmux kill-session -t "${TMUX_SESSION}"
 LOG_FILE="logs/train_$(date +%Y%m%d_%H%M%S).log"
 tmux new-session -d -s "${TMUX_SESSION}" \
-  env REMOTE_DIR="${REMOTE_DIR}" LOG_FILE="${LOG_FILE}" TRAIN_CMD="${TRAIN_CMD}" \
-  bash -lc 'set -o pipefail; cd ~/"${REMOTE_DIR}" && source .venv/bin/activate && export PYTHONUNBUFFERED=1 && start_ts=$(date +%s); start_iso=$(date -Is); { echo "START_TIME=${start_iso}"; echo "TRAIN_CMD=${TRAIN_CMD}"; eval "${TRAIN_CMD}"; } 2>&1 | tee "${LOG_FILE}"; status=${PIPESTATUS[0]}; end_ts=$(date +%s); end_iso=$(date -Is); elapsed=$((end_ts - start_ts)); { echo; echo "END_TIME=${end_iso}"; echo "ELAPSED_SECONDS=${elapsed}"; echo "Done with exit code ${status}. Log: ~/${REMOTE_DIR}/${LOG_FILE}"; } | tee -a "${LOG_FILE}"; exit "${status}"'
+  env REMOTE_DIR="${REMOTE_DIR}" LOG_FILE="${LOG_FILE}" TRAIN_CMDS_B64="${TRAIN_CMDS_B64}" CONTINUE_ON_ERROR="${CONTINUE_ON_ERROR}" \
+  bash -lc 'set -o pipefail; cd ~/"${REMOTE_DIR}" && source .venv/bin/activate && export PYTHONUNBUFFERED=1 && mapfile -t TRAIN_CMDS < <(printf "%s" "${TRAIN_CMDS_B64}" | base64 -d) && total=${#TRAIN_CMDS[@]} && start_ts=$(date +%s) && start_iso=$(date -Is) && { echo "START_TIME=${start_iso}"; echo "EXPERIMENTS=${total}"; echo "CONTINUE_ON_ERROR=${CONTINUE_ON_ERROR}"; failed=0; for i in "${!TRAIN_CMDS[@]}"; do cmd="${TRAIN_CMDS[$i]}"; [[ -z "${cmd}" ]] && continue; n=$((i + 1)); echo; echo "=== EXPERIMENT ${n}/${total} ==="; echo "TRAIN_CMD=${cmd}"; exp_start=$(date +%s); eval "${cmd}"; status=$?; exp_elapsed=$(( $(date +%s) - exp_start )); echo "EXPERIMENT ${n}/${total} exit=${status} elapsed=${exp_elapsed}s"; if [[ ${status} -ne 0 ]]; then failed=$((failed + 1)); if [[ "${CONTINUE_ON_ERROR}" != "1" ]]; then exit "${status}"; fi; fi; done; if [[ ${failed} -gt 0 ]]; then exit 1; fi; } 2>&1 | tee "${LOG_FILE}"; status=${PIPESTATUS[0]}; end_ts=$(date +%s); end_iso=$(date -Is); elapsed=$((end_ts - start_ts)); { echo; echo "END_TIME=${end_iso}"; echo "ELAPSED_SECONDS=${elapsed}"; echo "Done with exit code ${status}. Log: ~/${REMOTE_DIR}/${LOG_FILE}"; } | tee -a "${LOG_FILE}"; exit "${status}"'
 sleep 1
 if ! tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
   echo "ERROR: tmux session exited immediately."
@@ -141,7 +171,7 @@ pull() {
 
 poll() {
   echo "=== Training status (${INSTANCE}) ==="
-  local poll_info csv_remote csv_name png_path
+  local poll_info csv_remote csv_name png_path experiment
   poll_info=$(remote bash -s <<EOF
 set -euo pipefail
 cd ~/${REMOTE_DIR} 2>/dev/null || { echo "STATUS:missing"; exit 0; }
@@ -155,6 +185,8 @@ fi
 latest_log=\$(ls -t logs/train_*.log 2>/dev/null | head -1 || true)
 if [[ -n "\${latest_log}" ]]; then
   echo "LOG:\${latest_log}"
+  experiment=\$(grep -oE '=== EXPERIMENT [0-9]+/[0-9]+ ===' "\${latest_log}" 2>/dev/null | tail -1 | sed 's/^=== //;s/ ===$//' || true)
+  [[ -n "\${experiment}" ]] && echo "EXP:\${experiment}"
   latest_csv=\$(grep -oE 'Logging metrics to output/[^ ]+\.csv' "\${latest_log}" 2>/dev/null | sed 's/^Logging metrics to //' | tail -1 || true)
   grep -F -e '[iter ' -e '[target ' -e '    eval |' "\${latest_log}" 2>/dev/null | tail -3 || tail -3 "\${latest_log}"
 else
@@ -175,6 +207,10 @@ EOF
     stopped) echo "tmux:   not running" ;;
     missing) echo "Project not found on VM — run ./scripts/gcp_run.sh setup"; return 1 ;;
   esac
+
+  if experiment=$(echo "${poll_info}" | sed -n 's/^EXP://p' | head -1); then
+    [[ -n "${experiment}" ]] && echo "queue:  ${experiment}"
+  fi
 
   if metrics=$(echo "${poll_info}" | sed -n 's/^METRICS://p' | head -1); then
     [[ -n "${metrics}" ]] && echo "metrics: ${metrics}"
@@ -224,7 +260,7 @@ ssh_shell() {
 }
 
 usage() {
-  sed -n '3,14p' "$0" | tr -d '#'
+  sed -n '3,18p' "$0" | tr -d '#'
   exit 1
 }
 
