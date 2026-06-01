@@ -7,7 +7,7 @@
 #   ./scripts/gcp_run.sh run           # sync + run experiments from scripts/experiments.txt
 #   ./scripts/gcp_run.sh attach        # attach to the tmux session
 #   ./scripts/gcp_run.sh logs          # tail the run log
-#   ./scripts/gcp_run.sh poll          # status + pull latest metrics plot and open it
+#   ./scripts/gcp_run.sh poll          # status + pull/plot metrics from the latest log
 #   ./scripts/gcp_run.sh pull          # copy checkpoints/output back to local machine
 #   ./scripts/gcp_run.sh ssh           # open an interactive shell on the VM
 #
@@ -171,7 +171,7 @@ pull() {
 
 poll() {
   echo "=== Training status (${INSTANCE}) ==="
-  local poll_info csv_remote csv_name png_path experiment
+  local poll_info csv_remote csv_name png_path experiment latest_png
   poll_info=$(remote bash -s <<EOF
 set -euo pipefail
 cd ~/${REMOTE_DIR} 2>/dev/null || { echo "STATUS:missing"; exit 0; }
@@ -187,6 +187,13 @@ if [[ -n "\${latest_log}" ]]; then
   echo "LOG:\${latest_log}"
   experiment=\$(grep -oE '=== EXPERIMENT [0-9]+/[0-9]+ ===' "\${latest_log}" 2>/dev/null | tail -1 | sed 's/^=== //;s/ ===$//' || true)
   [[ -n "\${experiment}" ]] && echo "EXP:\${experiment}"
+  while IFS= read -r csv_path; do
+    [[ -n "\${csv_path}" ]] && echo "CSV:\${csv_path}"
+  done < <(
+    grep -oE 'Logging metrics to output/[^ ]+\.csv' "\${latest_log}" 2>/dev/null \
+      | sed 's/^Logging metrics to //' \
+      | awk '!seen[\$0]++'
+  )
   latest_csv=\$(grep -oE 'Logging metrics to output/[^ ]+\.csv' "\${latest_log}" 2>/dev/null | sed 's/^Logging metrics to //' | tail -1 || true)
   grep -F -e '[iter ' -e '[target ' -e '    eval |' "\${latest_log}" 2>/dev/null | tail -3 || tail -3 "\${latest_log}"
 else
@@ -194,10 +201,7 @@ else
 fi
 
 if [[ -n "\${latest_csv}" ]]; then
-  echo "CSV:\${latest_csv}"
   echo "METRICS:\$(tail -1 "\${latest_csv}")"
-else
-  echo "CSV:"
 fi
 EOF
 )
@@ -222,34 +226,39 @@ EOF
 
   echo "${poll_info}" | grep -F -e '[iter ' -e '[target ' -e '    eval |' || true
 
-  csv_remote=$(echo "${poll_info}" | sed -n 's/^CSV://p' | head -1)
-  if [[ -z "${csv_remote}" ]]; then
+  csv_remotes=()
+  while IFS= read -r _csv; do
+    [[ -n "${_csv}" ]] && csv_remotes+=("${_csv}")
+  done < <(echo "${poll_info}" | sed -n 's/^CSV://p')
+  if [[ ${#csv_remotes[@]} -eq 0 ]]; then
     echo ""
     echo "No metrics CSV found in the latest log yet."
     echo "Not pulling older output, to avoid showing a stale plot."
     return 0
   fi
 
-  csv_name=$(basename "${csv_remote}")
   echo ""
-  echo "Pulling output/${csv_name}..."
+  echo "Pulling ${#csv_remotes[@]} metrics file(s) from latest log..."
   mkdir -p "${LOCAL_ROOT}/output"
-  "${GCLOUD_SCP[@]}" "${INSTANCE}:~/${REMOTE_DIR}/${csv_remote}" "${LOCAL_ROOT}/output/"
+  for csv_remote in "${csv_remotes[@]}"; do
+    csv_name=$(basename "${csv_remote}")
+    echo "  output/${csv_name}"
+    "${GCLOUD_SCP[@]}" "${INSTANCE}:~/${REMOTE_DIR}/${csv_remote}" "${LOCAL_ROOT}/output/"
+    echo "  plotting output/${csv_name}"
+    (cd "${LOCAL_ROOT}" && python3 -c "from metrics import plot_run; plot_run('output/${csv_name}')")
+    latest_png="${LOCAL_ROOT}/output/${csv_name%.csv}.png"
+  done
 
-  echo "Generating plot from latest metrics..."
-  (cd "${LOCAL_ROOT}" && python3 -c "from metrics import plot_run; plot_run('output/${csv_name}')")
-
-  png_path="${LOCAL_ROOT}/output/${csv_name%.csv}.png"
-  if [[ ! -f "${png_path}" ]]; then
+  if [[ ! -f "${latest_png}" ]]; then
     echo "Plot not created (is matplotlib installed locally?)"
     return 1
   fi
 
-  echo "Opening ${png_path}"
+  echo "Opening ${latest_png}"
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    open "${png_path}"
+    open "${latest_png}"
   elif command -v xdg-open >/dev/null; then
-    xdg-open "${png_path}"
+    xdg-open "${latest_png}"
   else
     echo "(install xdg-open or open the file manually)"
   fi

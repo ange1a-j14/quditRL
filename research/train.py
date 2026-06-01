@@ -152,7 +152,8 @@ def main():
         seq = args.seq_len if args.seq_len is not None else 2 * args.d
         name = (
             f"{args.algo}_d{args.d}_{args.target}_"
-            f"seq{seq}_h{args.hidden}_seed{args.seed}"
+            f"seq{seq}_h{args.hidden}_seed{args.seed}_"
+            f"pulsepen_{args.pulse_penalty:g}"
         )
     else:
         name = f"{args.algo}_{args.model}_d{args.d}_{args.target}_h{args.hidden}_seed{args.seed}"
