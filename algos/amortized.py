@@ -1,19 +1,21 @@
 """Amortized differentiable pulse planner for qudit gate synthesis.
 
-Unlike PPO/CEM, this trains a single network that maps a target unitary to a
-pulse sequence (up to ``seq_len`` pulses) plus a learned halting distribution,
+A single network maps a target unitary to a fixed-length pulse sequence,
 optimized by backpropagating the analytic gradient of the infidelity through a
-differentiable rollout (``torch.matrix_exp``).
+differentiable rollout (``torch.matrix_exp``). This is the recipe that reaches
+~1e-3 infidelity on d=3 Haar targets.
 
-Variable length is handled PonderNet-style: the rollout exposes every prefix
-``U_1..U_T``, the halt head defines a distribution ``p_k`` over where to stop,
-and the loss is the expected ``infidelity + pulse_penalty * k`` under ``p_k``.
-A larger ``pulse_penalty`` shifts ``p_k`` toward shorter sequences, all fully
-differentiable (no discrete terminate action, so no RL-style collapse).
+For higher dimensions (d>=4) plain Haar training gets stuck in the
+target-independent ``1/d^2`` minimum (the planner ignores the target). A
+target-difficulty curriculum fixes this: train on random pulse-circuit targets
+of annealed depth (easy, guaranteed reachable, near identity) before graduating
+to the real target distribution, so the network first learns to condition on the
+target and then hardens.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from dataclasses import dataclass, field
@@ -37,7 +39,17 @@ class AmortizedConfig:
     batch_targets: int = 256
     lr: float = 1e-3
     loss: str = "infidelity"
-    pulse_penalty: float = 0.0
+    # Target-difficulty curriculum: train on random pulse-circuit targets of
+    # annealed depth before graduating to the real target distribution.
+    target_curriculum: bool = False
+    curriculum_frac: float = 0.5
+    curriculum_start_pulses: int = 1
+    curriculum_end_pulses: int | None = None
+    # Cosine LR decay to eta_min = lr * lr_min_frac over training; lowers the
+    # end-of-training infidelity plateau and the eval noise.
+    lr_min_frac: float = 0.01
+    # Max global grad norm; keeps the deep matrix_exp rollout stable at high d.
+    grad_clip: float = 1.0
     eval_interval: int = 100
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     checkpoint_dir: str = "checkpoints"
@@ -51,8 +63,8 @@ def _jx_offdiag(d: int, device: str) -> torch.Tensor:
     return 0.5 * torch.sqrt((k + 1) * (d - 1 - k))
 
 
-def compose_prefix_unitaries(phis: torch.Tensor, thetas: torch.Tensor) -> torch.Tensor:
-    """Differentiably compose every prefix unitary from pulse parameters.
+def compose_final_unitary(phis: torch.Tensor, thetas: torch.Tensor) -> torch.Tensor:
+    """Differentiably compose the full-sequence unitary from pulse parameters.
 
     Parameters
     ----------
@@ -63,8 +75,7 @@ def compose_prefix_unitaries(phis: torch.Tensor, thetas: torch.Tensor) -> torch.
 
     Returns
     -------
-    Complex tensor ``(B, T, d, d)`` where entry ``k`` is ``D_k @ ... @ D_1 @ I``
-    (the unitary after applying ``k+1`` pulses), autograd-connected to inputs.
+    Complex tensor ``(B, d, d)`` = ``D_T @ ... @ D_1 @ I``, autograd-connected.
     """
     batch, seq_len, d_minus_1 = phis.shape
     d = d_minus_1 + 1
@@ -73,7 +84,6 @@ def compose_prefix_unitaries(phis: torch.Tensor, thetas: torch.Tensor) -> torch.
     idx = torch.arange(d - 1, device=device)
 
     U = torch.eye(d, dtype=torch.cfloat, device=device).expand(batch, d, d).clone()
-    prefixes = []
     for step in range(seq_len):
         phase = torch.exp(-1j * phis[:, step, :].to(torch.cfloat))  # (B, d-1)
         H = torch.zeros((batch, d, d), dtype=torch.cfloat, device=device)
@@ -82,34 +92,14 @@ def compose_prefix_unitaries(phis: torch.Tensor, thetas: torch.Tensor) -> torch.
         theta = thetas[:, step].to(torch.cfloat)
         pulse = torch.matrix_exp(-1j * theta[:, None, None] * H)
         U = pulse @ U
-        prefixes.append(U)
-    return torch.stack(prefixes, dim=1)  # (B, T, d, d)
+    return U
 
 
-def prefix_fidelity(U_prefix: torch.Tensor, U_target: torch.Tensor) -> torch.Tensor:
-    """Phase-invariant fidelity per prefix: ``(B, T)`` for ``U_prefix (B,T,d,d)``."""
-    d = U_prefix.shape[-1]
-    overlap = torch.einsum("btij,bij->bt", U_prefix.conj(), U_target)
+def batch_fidelity(U_pred: torch.Tensor, U_target: torch.Tensor) -> torch.Tensor:
+    """Phase-invariant gate fidelity per item: |Tr(U_pred^† U_target)|^2 / d^2."""
+    d = U_pred.shape[-1]
+    overlap = torch.einsum("bij,bij->b", U_pred.conj(), U_target)
     return overlap.abs().square() / (d * d)
-
-
-def halt_distribution(halt_logits: torch.Tensor) -> torch.Tensor:
-    """PonderNet-style stop distribution ``p_k`` over steps from halt logits.
-
-    ``lambda_k = sigmoid(halt_logits_k)`` is the conditional probability of
-    stopping at step ``k`` given the chain reached it; ``p_k`` is the resulting
-    unconditional stop probability. The final step absorbs all remaining mass so
-    ``sum_k p_k = 1``.
-    """
-    lam = torch.sigmoid(halt_logits)  # (B, T)
-    one_minus = 1.0 - lam
-    incl = torch.cumprod(one_minus, dim=1)
-    ones = torch.ones_like(incl[:, :1])
-    survive = torch.cat([ones, incl[:, :-1]], dim=1)  # prob of reaching step k
-    p = lam * survive
-    # Force a halt at the last step: it takes the remaining survival mass.
-    p = torch.cat([p[:, :-1], survive[:, -1:]], dim=1)
-    return p
 
 
 def _targets_to_tensor(targets: list[np.ndarray], device: str) -> torch.Tensor:
@@ -122,35 +112,47 @@ def _flatten_targets(U_target: torch.Tensor) -> torch.Tensor:
     return torch.cat([U_target.real, U_target.imag], dim=-1).reshape(U_target.shape[0], -1)
 
 
-def _infidelity_term(fidelity: torch.Tensor, U_prefix: torch.Tensor, U_target: torch.Tensor, name: str) -> torch.Tensor:
-    """Per-prefix base objective (B, T), lower is better, before pulse penalty."""
+def _random_circuit_targets(batch: int, d: int, depth: int, device: str) -> torch.Tensor:
+    """Sample reachable SU(d) targets as random pulse circuits of given depth.
+
+    Built on-device with the same (no-grad) rollout, so every target is exactly
+    reachable in ``depth`` pulses. Small depth keeps targets near identity, which
+    gives the planner an easy, strongly-conditioned learning signal.
+    """
+    phis = (torch.rand(batch, depth, d - 1, device=device) * 2 - 1) * math.pi
+    thetas = torch.rand(batch, depth, device=device) * math.pi
+    with torch.no_grad():
+        return compose_final_unitary(phis, thetas)
+
+
+def _scheduled_curriculum_depth(cfg: AmortizedConfig, it: int) -> int | None:
+    """Curriculum circuit depth at iteration ``it``; None once graduated to real targets."""
+    ramp_iters = max(1, int(cfg.iters * cfg.curriculum_frac))
+    if it > ramp_iters:
+        return None
+    end = cfg.curriculum_end_pulses or cfg.seq_len
+    progress = (it - 1) / max(1, ramp_iters - 1)
+    depth = round(cfg.curriculum_start_pulses + progress * (end - cfg.curriculum_start_pulses))
+    return max(1, min(int(depth), cfg.seq_len))
+
+
+def _loss_from_fidelity(fidelity: torch.Tensor, U_pred: torch.Tensor, U_target: torch.Tensor, name: str) -> torch.Tensor:
     if name == "infidelity":
-        return 1.0 - fidelity
+        return (1.0 - fidelity).mean()
     if name == "log-infidelity":
-        return torch.log(torch.clamp(1.0 - fidelity, min=1e-9))
+        return torch.log(torch.clamp(1.0 - fidelity, min=1e-9)).mean()
     if name == "l1":
-        return (U_prefix - U_target[:, None]).abs().sum(dim=(2, 3))
+        return (U_pred - U_target).abs().sum(dim=(1, 2)).mean()
     raise ValueError(f"Unknown loss {name!r}. Choose infidelity|log-infidelity|l1")
-
-
-def _pulse_counts(seq_len: int, device: str) -> torch.Tensor:
-    """1-based pulse count for each prefix step: tensor of shape (T,)."""
-    return torch.arange(1, seq_len + 1, dtype=torch.float32, device=device)
 
 
 @torch.no_grad()
 def evaluate(planner, eval_targets: torch.Tensor) -> tuple[float, float]:
-    """Deterministic eval: stop at argmax halt step; return (mean_fid, mean_pulses)."""
+    """Fixed-length eval: apply all seq_len pulses; return (mean_fid, n_pulses)."""
     feats = _flatten_targets(eval_targets)
-    phis, thetas, halt_logits = planner(feats)
-    prefixes = compose_prefix_unitaries(phis, thetas)
-    fids = prefix_fidelity(prefixes, eval_targets)  # (B, T)
-    p = halt_distribution(halt_logits)  # (B, T)
-    kstar = p.argmax(dim=1)  # (B,)
-    rows = torch.arange(fids.shape[0], device=fids.device)
-    chosen_fid = fids[rows, kstar]
-    pulses = (kstar + 1).float()
-    return float(chosen_fid.mean().item()), float(pulses.mean().item())
+    phis, thetas = planner(feats)
+    U_pred = compose_final_unitary(phis, thetas)
+    return float(batch_fidelity(U_pred, eval_targets).mean().item()), float(phis.shape[1])
 
 
 def train(
@@ -159,10 +161,12 @@ def train(
     cfg: AmortizedConfig,
     eval_targets: list[np.ndarray] | None = None,
 ) -> None:
-    """Train the amortized planner with a differentiable halting objective."""
+    """Train the fixed-length amortized planner (optionally with curriculum)."""
     planner.to(cfg.device)
     optimizer = torch.optim.Adam(planner.parameters(), lr=cfg.lr)
-    counts = _pulse_counts(cfg.seq_len, cfg.device)  # (T,)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg.iters, eta_min=cfg.lr * cfg.lr_min_frac
+    )
 
     eval_t = (
         _targets_to_tensor(eval_targets, cfg.device)
@@ -171,45 +175,51 @@ def train(
     )
 
     print(
-        f"Amortized | d={cfg.d} max_pulses={cfg.seq_len} | "
+        f"Amortized | d={cfg.d} pulses={cfg.seq_len} | "
         f"{cfg.iters} iters x {cfg.batch_targets} targets | "
-        f"loss={cfg.loss} pulse_penalty={cfg.pulse_penalty} | "
-        f"{cfg.checkpoint_name}"
+        f"loss={cfg.loss} | {cfg.checkpoint_name}"
     )
+    if cfg.target_curriculum:
+        end = cfg.curriculum_end_pulses or cfg.seq_len
+        print(
+            "Target curriculum | random-circuit depth "
+            f"{cfg.curriculum_start_pulses} -> {end} over "
+            f"{cfg.curriculum_frac:g} of training, then real targets"
+        )
 
     with RunLogger(cfg.checkpoint_name) as logger:
         for it in range(1, cfg.iters + 1):
-            batch = [sampler() for _ in range(cfg.batch_targets)]
-            U_target = _targets_to_tensor(batch, cfg.device)
+            depth = _scheduled_curriculum_depth(cfg, it) if cfg.target_curriculum else None
+            if depth is not None:
+                U_target = _random_circuit_targets(cfg.batch_targets, cfg.d, depth, cfg.device)
+            else:
+                batch = [sampler() for _ in range(cfg.batch_targets)]
+                U_target = _targets_to_tensor(batch, cfg.device)
             feats = _flatten_targets(U_target)
 
-            phis, thetas, halt_logits = planner(feats)
-            prefixes = compose_prefix_unitaries(phis, thetas)
-            fids = prefix_fidelity(prefixes, U_target)            # (B, T)
-            p = halt_distribution(halt_logits)                    # (B, T)
-
-            base = _infidelity_term(fids, prefixes, U_target, cfg.loss)
-            objective = base + cfg.pulse_penalty * counts[None, :]
-            # Expected objective under the learned stop distribution.
-            loss = (p * objective).sum(dim=1).mean()
+            phis, thetas = planner(feats)
+            U_pred = compose_final_unitary(phis, thetas)
+            fidelity = batch_fidelity(U_pred, U_target)
+            loss = _loss_from_fidelity(fidelity, U_pred, U_target, cfg.loss)
 
             optimizer.zero_grad()
             loss.backward()
+            if cfg.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(planner.parameters(), cfg.grad_clip)
             optimizer.step()
+            scheduler.step()
 
             if it % cfg.eval_interval != 0 and it != cfg.iters:
                 continue
 
-            # Report the deployed behavior: fidelity/pulses at the chosen stop.
-            exp_pulses = float((p * counts[None, :]).sum(dim=1).mean().item())
-            train_fid = float((p * fids).sum(dim=1).mean().item())
+            train_fid = float(fidelity.mean().item())
             ef, ep = (None, None)
             if eval_t is not None:
                 ef, ep = evaluate(planner, eval_t)
+                depth_str = f"depth={depth}" if depth is not None else "depth=real"
                 print(
-                    f"[iter {it:5d}] train_fid={train_fid:.4f}  "
-                    f"E[pulses]={exp_pulses:4.1f}  loss={loss.item():.5f}  "
-                    f"eval_fid={ef:.4f}  eval_pulses={ep:4.1f}"
+                    f"[iter {it:5d}] {depth_str}  train_fid={train_fid:.4f}  "
+                    f"loss={loss.item():.5f}  eval_fid={ef:.4f}"
                 )
 
             logger.log(
@@ -217,7 +227,7 @@ def train(
                 timestep=it * cfg.batch_targets,
                 episodes=cfg.batch_targets,
                 train_fidelity=train_fid,
-                train_pulses=exp_pulses,
+                train_pulses=cfg.seq_len,
                 eval_fidelity=ef,
                 eval_pulses=ep,
             )

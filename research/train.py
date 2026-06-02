@@ -98,7 +98,7 @@ def main():
     p.add_argument("--bc-batch-size", type=int, default=256)
     p.add_argument("--bc-updates-per-target", type=int, default=20)
     p.add_argument("--bc-lr", type=float, default=3e-4)
-    p.add_argument("--seq-len", type=int, default=None, help="amortized pulse sequence length (default 2*d)")
+    p.add_argument("--seq-len", type=int, default=None, help="amortized pulse sequence length (default 2*d; keep shallow so the rollout stays trainable)")
     p.add_argument("--batch-targets", type=int, default=256, help="amortized targets per gradient step")
     p.add_argument("--amortized-iters", type=int, default=20000, help="amortized gradient steps")
     p.add_argument("--lr", type=float, default=1e-3, help="amortized learning rate")
@@ -109,28 +109,31 @@ def main():
         help="amortized training loss",
     )
     p.add_argument(
-        "--pulse-penalty",
-        type=float,
-        default=0.0,
-        help="amortized per-pulse cost; >0 makes the halting head exit early",
+        "--target-curriculum",
+        action="store_true",
+        help="amortized: train on random-circuit targets of annealed depth "
+             "(easy->hard) before graduating to the real target distribution",
     )
+    p.add_argument("--curriculum-frac", type=float, default=0.5, help="fraction of training spent ramping target difficulty")
+    p.add_argument("--curriculum-start-pulses", type=int, default=1, help="initial random-circuit depth")
+    p.add_argument("--curriculum-end-pulses", type=int, default=None, help="final random-circuit depth (default seq_len)")
     p.add_argument(
         "--min-terminate-pulses-start",
         type=int,
-        default=10,
-        help="initial minimum pulses before terminate is allowed",
+        default=None,
+        help="PPO: initial minimum pulses before stopping",
     )
     p.add_argument(
         "--min-terminate-pulses-end",
         type=int,
-        default=4,
-        help="final minimum pulses before terminate is allowed",
+        default=None,
+        help="PPO: final minimum pulses before stopping",
     )
     p.add_argument(
         "--min-terminate-anneal-frac",
         type=float,
         default=0.5,
-        help="fraction of training used to anneal the terminate pulse floor",
+        help="PPO: fraction of training used to anneal the pulse floor",
     )
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
@@ -152,8 +155,7 @@ def main():
         seq = args.seq_len if args.seq_len is not None else 2 * args.d
         name = (
             f"{args.algo}_d{args.d}_{args.target}_"
-            f"seq{seq}_h{args.hidden}_seed{args.seed}_"
-            f"pulsepen_{args.pulse_penalty:g}"
+            f"seq{seq}_h{args.hidden}_seed{args.seed}"
         )
     else:
         name = f"{args.algo}_{args.model}_d{args.d}_{args.target}_h{args.hidden}_seed{args.seed}"
@@ -168,7 +170,10 @@ def main():
             batch_targets=args.batch_targets,
             lr=args.lr,
             loss=args.loss,
-            pulse_penalty=args.pulse_penalty,
+            target_curriculum=args.target_curriculum,
+            curriculum_frac=args.curriculum_frac,
+            curriculum_start_pulses=args.curriculum_start_pulses,
+            curriculum_end_pulses=args.curriculum_end_pulses,
             checkpoint_name=name,
             checkpoint_meta=dict(
                 d=args.d,
@@ -176,7 +181,10 @@ def main():
                 hidden=args.hidden,
                 seq_len=seq_len,
                 loss=args.loss,
-                pulse_penalty=args.pulse_penalty,
+                target_curriculum=args.target_curriculum,
+                curriculum_frac=args.curriculum_frac,
+                curriculum_start_pulses=args.curriculum_start_pulses,
+                curriculum_end_pulses=args.curriculum_end_pulses,
                 seed=args.seed,
             ),
         )
@@ -250,11 +258,13 @@ def main():
 
     env = build_env(args)
     policy = build_policy(args)
+    ppo_min_start = 10 if args.min_terminate_pulses_start is None else args.min_terminate_pulses_start
+    ppo_min_end = 4 if args.min_terminate_pulses_end is None else args.min_terminate_pulses_end
     cfg = PPOConfig(
         total_timesteps=args.total_timesteps,
         gamma=args.gamma,
-        min_terminate_pulses_start=args.min_terminate_pulses_start,
-        min_terminate_pulses_end=args.min_terminate_pulses_end,
+        min_terminate_pulses_start=ppo_min_start,
+        min_terminate_pulses_end=ppo_min_end,
         min_terminate_anneal_frac=args.min_terminate_anneal_frac,
         checkpoint_name=name,
         checkpoint_meta=dict(
@@ -265,8 +275,8 @@ def main():
             gamma=args.gamma,
             step_penalty=args.step_penalty,
             max_pulses=args.max_pulses,
-            min_terminate_pulses_start=args.min_terminate_pulses_start,
-            min_terminate_pulses_end=args.min_terminate_pulses_end,
+            min_terminate_pulses_start=ppo_min_start,
+            min_terminate_pulses_end=ppo_min_end,
             min_terminate_anneal_frac=args.min_terminate_anneal_frac,
             seed=args.seed,
         ),

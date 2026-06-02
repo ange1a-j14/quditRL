@@ -32,7 +32,7 @@ CONTINUE_ON_ERROR="${CONTINUE_ON_ERROR:-0}"
 # TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo ppo --d 3 --target haar --hidden 512 --seed 0 --total-timesteps 5000000 --max-pulses 25 --reward l1}"
 # TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo cem --d 4 --target haar --hidden 512 --seed 0 --cem-targets 200 --cem-iters 25 --cem-population 128 --cem-elites 16 --cem-seq-len 10}"
 # TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo bc --d 3 --target haar --hidden 256 --max-pulses 10 --seed 0 --bc-targets 200 --bc-updates-per-target 20 --cem-iters 100 --cem-population 256 --cem-elites 16 --cem-seq-len 10}"
-# TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo amortized --d 3 --target haar --hidden 1056 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.001 --seed 0}"
+# TRAIN_CMD="${TRAIN_CMD:-python research/train.py --algo amortized --d 4 --target haar --hidden 2048 --seq-len 20 --batch-targets 256 --amortized-iters 30000 --lr 1e-3 --loss infidelity --pulse-penalty 0 --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --curriculum-end-pulses 20 --seed 0}"
 TRAIN_CMDS=()
 
 load_train_cmds() {

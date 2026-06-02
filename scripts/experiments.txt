@@ -1,20 +1,18 @@
 # One train command per line. Lines starting with # are ignored.
 # Edit this file, then: ./scripts/gcp_run.sh run
 #
-# Override for a single one-off run:
-#   TRAIN_CMD='python research/train.py ...' ./scripts/gcp_run.sh run
-#
-# Continue after a failed experiment:
-#   CONTINUE_ON_ERROR=1 ./scripts/gcp_run.sh run
+# Recipe (see EXPERIMENTS.md):
+#   - keep the rollout shallow: seq_len ~ 2-3*d (deep rollouts collapse to 1/d^2)
+#   - target-difficulty curriculum for d>=4 (escapes the 1/d^2 minimum)
+#   - cosine LR decay + grad clipping are on by default in the trainer
+# curriculum end depth defaults to seq_len.
 
-# Amortized sweep: pulse-penalty 0.001, d=3..8
-python research/train.py --algo amortized --d 3 --target haar --hidden 1056 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.00 --seed 0
-python research/train.py --algo amortized --d 4 --target haar --hidden 1056 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.00 --seed 0
-python research/train.py --algo amortized --d 5 --target haar --hidden 1056 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.00 --seed 0
-python research/train.py --algo amortized --d 6 --target haar --hidden 1056 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.00 --seed 0
-python research/train.py --algo amortized --d 7 --target haar --hidden 1056 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.00 --seed 0
-python research/train.py --algo amortized --d 8 --target haar --hidden 1056 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.00 --seed 0
+# d=3 validated baseline (no curriculum needed): ~0.996 fidelity
+python research/train.py --algo amortized --d 3 --target haar --hidden 512  --seq-len 6  --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --seed 0
 
-# python research/train.py --algo amortized --d 3 --target haar --hidden 512 --seq-len 25 --batch-targets 256 --amortized-iters 20000 --lr 1e-3 --loss infidelity --pulse-penalty 0.01 --seed 0
-# python research/train.py --algo ppo --d 3 --target haar --hidden 512 --seed 0 --total-timesteps 5000000 --max-pulses 25 --reward l1
-# python research/train.py --algo cem --d 4 --target haar --hidden 512 --seed 0 --cem-targets 200 --cem-iters 25 --cem-population 128 --cem-elites 16 --cem-seq-len 10
+# d=4..8: shallow seq_len=3*d + curriculum, hidden/iters scaled with dimension
+python research/train.py --algo amortized --d 4 --target haar --hidden 1024 --seq-len 12 --batch-targets 256 --amortized-iters 30000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
+python research/train.py --algo amortized --d 5 --target haar --hidden 1024 --seq-len 15 --batch-targets 256 --amortized-iters 40000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
+python research/train.py --algo amortized --d 6 --target haar --hidden 2048 --seq-len 18 --batch-targets 256 --amortized-iters 50000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
+python research/train.py --algo amortized --d 7 --target haar --hidden 2048 --seq-len 21 --batch-targets 256 --amortized-iters 60000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
+python research/train.py --algo amortized --d 8 --target haar --hidden 2048 --seq-len 24 --batch-targets 256 --amortized-iters 60000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
