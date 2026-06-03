@@ -37,6 +37,13 @@ class PulseSequencePlanner(nn.Module):
             nn.Tanh(),
         )
         self.pulse_head = nn.Linear(hidden, seq_len * d)
+        # Identity-block init: start with ~zero pulse params so the composed
+        # unitary is ~I. This places the planner next to the easy (near-identity)
+        # curriculum targets with a strong, non-vanishing gradient, avoiding the
+        # barren plateau that stalls deeper/higher-d rollouts at the 1/d^2 floor.
+        nn.init.zeros_(self.pulse_head.bias)
+        with torch.no_grad():
+            self.pulse_head.weight.mul_(1e-2)
 
     def forward(self, feats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(phis, thetas)`` for a batch of targets.

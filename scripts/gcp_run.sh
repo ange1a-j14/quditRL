@@ -138,6 +138,7 @@ if ! tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
   exit 1
 fi
 echo "Training started in tmux session '${TMUX_SESSION}' (user: $(whoami))."
+echo "Log file: ~/${REMOTE_DIR}/${LOG_FILE}"
 echo "Attach on VM:  tmux attach -t ${TMUX_SESSION}"
 echo "Attach local:  ./scripts/gcp_run.sh attach"
 EOF
@@ -185,16 +186,20 @@ fi
 latest_log=\$(ls -t logs/train_*.log 2>/dev/null | head -1 || true)
 if [[ -n "\${latest_log}" ]]; then
   echo "LOG:\${latest_log}"
+  queue_total=\$(grep -m1 '^EXPERIMENTS=' "\${latest_log}" 2>/dev/null | cut -d= -f2 || true)
+  start_time=\$(grep -m1 '^START_TIME=' "\${latest_log}" 2>/dev/null | cut -d= -f2- || true)
+  [[ -n "\${queue_total}" ]] && echo "QUEUE:\${queue_total} experiment(s)"
+  [[ -n "\${start_time}" ]] && echo "START:\${start_time}"
+  train_cmd=\$(grep '^TRAIN_CMD=' "\${latest_log}" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  [[ -n "\${train_cmd}" ]] && echo "CMD:\${train_cmd}"
   experiment=\$(grep -oE '=== EXPERIMENT [0-9]+/[0-9]+ ===' "\${latest_log}" 2>/dev/null | tail -1 | sed 's/^=== //;s/ ===$//' || true)
   [[ -n "\${experiment}" ]] && echo "EXP:\${experiment}"
+  # Collect every experiment's CSV in this sweep's log (deduped, in order).
+  csv_matches=\$(grep -oE 'Logging metrics to output/[^ ]+\.csv' "\${latest_log}" 2>/dev/null | sed 's/^Logging metrics to //' || true)
   while IFS= read -r csv_path; do
     [[ -n "\${csv_path}" ]] && echo "CSV:\${csv_path}"
-  done < <(
-    grep -oE 'Logging metrics to output/[^ ]+\.csv' "\${latest_log}" 2>/dev/null \
-      | sed 's/^Logging metrics to //' \
-      | awk '!seen[\$0]++'
-  )
-  latest_csv=\$(grep -oE 'Logging metrics to output/[^ ]+\.csv' "\${latest_log}" 2>/dev/null | sed 's/^Logging metrics to //' | tail -1 || true)
+  done < <(printf '%s\n' "\${csv_matches}" | awk 'NF && !seen[\$0]++')
+  latest_csv=\$(printf '%s\n' "\${csv_matches}" | awk 'NF' | tail -1 || true)
   grep -F -e '[iter ' -e '[target ' -e '    eval |' "\${latest_log}" 2>/dev/null | tail -3 || tail -3 "\${latest_log}"
 else
   latest_csv=""
@@ -214,6 +219,18 @@ EOF
 
   if experiment=$(echo "${poll_info}" | sed -n 's/^EXP://p' | head -1); then
     [[ -n "${experiment}" ]] && echo "queue:  ${experiment}"
+  fi
+
+  if queue=$(echo "${poll_info}" | sed -n 's/^QUEUE://p' | head -1); then
+    [[ -n "${queue}" ]] && echo "runs:   ${queue} in this log"
+  fi
+
+  if start_time=$(echo "${poll_info}" | sed -n 's/^START://p' | head -1); then
+    [[ -n "${start_time}" ]] && echo "started:${start_time}"
+  fi
+
+  if train_cmd=$(echo "${poll_info}" | sed -n 's/^CMD://p' | head -1); then
+    [[ -n "${train_cmd}" ]] && echo "cmd:    ${train_cmd}"
   fi
 
   if metrics=$(echo "${poll_info}" | sed -n 's/^METRICS://p' | head -1); then
