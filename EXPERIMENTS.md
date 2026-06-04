@@ -6,7 +6,7 @@ of the gate infidelity through a differentiable `torch.matrix_exp` rollout
 (`algos/amortized.py`). One network solves any target; no per-target
 re-optimization.
 
-## Lessons learned
+## LEssons learned
 
 ### 1. Keep the rollout shallow (`seq_len ≈ 2–3·d`)
 Backpropagating through too many stacked `matrix_exp` pulses weakens the
@@ -21,7 +21,7 @@ Parameter counting: `SU(d)` has `d²−1` real parameters and each pulse supplie
 ≈ `d` (`d−1` phases + 1 angle), so `seq_len ≈ 2·d` already over-parameterizes the
 problem while staying shallow enough to train.
 
-### 2. Target-difficulty curriculum (essential for `d ≥ 4`)
+### 2. Target-difficulty curriculuum (essential for `d ≥ 4`)
 Plain Haar training at `d=4` also got stuck at the `1/d²` minimum — the target
 is too hard to ever produce a useful gradient from a random init. Fix: for the
 first `curriculum_frac` of training, sample targets as **random pulse circuits

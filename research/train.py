@@ -62,7 +62,7 @@ def build_eval_targets(args):
     if args.target == "qft":
         return [qft(args.d)]
     sampler = make_sampler(args.target, args.d, seed=12345)
-    return [sampler() for _ in range(4)]
+    return [sampler() for _ in range(256)]
 
 
 def main():

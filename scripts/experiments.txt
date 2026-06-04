@@ -6,8 +6,6 @@
 #   - SU(4) needs d^2-1 = 15 params; each pulse gives ~d = 4 -> reachability
 #     floor is ~4 pulses. Expect seq 4 underexpressive, gains saturating by ~3*d.
 
-python research/train.py --algo amortized --d 4 --target haar --hidden 1024 --seq-len 4  --batch-targets 256 --amortized-iters 30000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
-python research/train.py --algo amortized --d 4 --target haar --hidden 1024 --seq-len 6  --batch-targets 256 --amortized-iters 30000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
-python research/train.py --algo amortized --d 4 --target haar --hidden 1024 --seq-len 8  --batch-targets 256 --amortized-iters 30000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
-python research/train.py --algo amortized --d 4 --target haar --hidden 1024 --seq-len 12 --batch-targets 256 --amortized-iters 30000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
-python research/train.py --algo amortized --d 4 --target haar --hidden 1024 --seq-len 16 --batch-targets 256 --amortized-iters 30000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.5 --curriculum-start-pulses 1 --seed 0
+python research/train.py --algo amortized --d 6 --target haar --hidden 1024 --seq-len 12 --batch-targets 256 --amortized-iters 50000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.6 --curriculum-start-pulses 1 --seed 0
+python research/train.py --algo amortized --d 7 --target haar --hidden 1024 --seq-len 14 --batch-targets 256 --amortized-iters 60000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.6 --curriculum-start-pulses 1 --seed 0
+python research/train.py --algo amortized --d 8 --target haar --hidden 1024 --seq-len 16 --batch-targets 256 --amortized-iters 70000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.6 --curriculum-start-pulses 1 --seed 0
