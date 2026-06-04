@@ -6,6 +6,7 @@ conditioned on (U_current, U_target).  The result can be used directly or as a
 warm start for PPO/SAC-style fine tuning.
 
 Trial code: did not deliver much improved performance on medium sized run.
+Failure on teacher -> weak generalization
     
 """
 

@@ -3,6 +3,8 @@
 A feedforward network that maps a target unitary to a fixed-length pulse
 sequence in one shot. Trained end-to-end by backprop through a differentiable
 rollout (see algos/amortized.py) against the gate infidelity.
+
+Td output shape, d-1 phis, 1 theta for each pulse (T pulses).
 """
 
 from __future__ import annotations

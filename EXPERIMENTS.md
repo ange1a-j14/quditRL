@@ -88,7 +88,7 @@ right next to the init with a strong, non-vanishing gradient. d=6 went from stuc
 at 0.027 to **eval fidelity 0.44 within 2,500 iters** and climbing — plateau
 escaped. (d=6–8 still use the shallow `seq_len=2·d` and `curriculum_frac=0.6`.)
 
-## Reproduce
+## Reproduce on GCP
 
 ```bash
 ./scripts/gcp_run.sh run     # runs everything in scripts/experiments.txt

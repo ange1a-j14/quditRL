@@ -1,10 +1,6 @@
 # One train command per line. Lines starting with # are ignored.
-# Edit this file, then: ./scripts/gcp_run.sh run
+# Edit file, then: ./scripts/gcp_run.sh run
 #
-# seq_len sweep at d=4 (everything else fixed: hidden 1024, curriculum, identity
-# init, 30k iters, lr 1e-3). Goal: map the fidelity-vs-pulses curve.
-#   - SU(4) needs d^2-1 = 15 params; each pulse gives ~d = 4 -> reachability
-#     floor is ~4 pulses. Expect seq 4 underexpressive, gains saturating by ~3*d.
 
 python research/train.py --algo amortized --d 6 --target haar --hidden 1024 --seq-len 12 --batch-targets 256 --amortized-iters 50000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.6 --curriculum-start-pulses 1 --seed 0
 python research/train.py --algo amortized --d 7 --target haar --hidden 1024 --seq-len 14 --batch-targets 256 --amortized-iters 60000 --lr 1e-3 --loss infidelity --target-curriculum --curriculum-frac 0.6 --curriculum-start-pulses 1 --seed 0

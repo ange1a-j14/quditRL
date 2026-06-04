@@ -6,6 +6,8 @@ parameters and logs the best sequence found.  If this succeeds where PPO fails,
 the issue is policy optimization/exploration; if this also fails, the action
 parameterization or target difficulty is the likely bottleneck.
 
+Suffers from same constraint as SGD -> not fgeneralized
+
 1. Maintain a Gaussian distribution over full pulse sequences.
     For d=5 and seq_len=10, each pulse has d parameters:
     4 phases + theta, for a 10 x 5 optimization variable.
